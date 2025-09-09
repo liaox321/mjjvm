@@ -8,7 +8,6 @@ import os
 import sys
 import logging
 from logging.handlers import RotatingFileHandler
-import threading
 import warnings
 from dotenv import load_dotenv
 
@@ -93,8 +92,10 @@ def send_ftqq(messages):
             title = f"🟢 上架 - {region}"
         elif msg["type"] == "库存变化":
             title = f"🟡 库存变化 - {region}"
-        else:
+        elif msg["type"] == "售罄":
             title = f"🔴 售罄 - {region}"
+        else:
+            title = f"⚠️ 报警 - {region}"
 
         content = f"""
 名称: {msg['name']}
@@ -280,3 +281,4 @@ def main_loop():
 # ---------------------------- 启动 ----------------------------
 if __name__ == "__main__":
     main_loop()
+
