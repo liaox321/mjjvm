@@ -280,5 +280,23 @@ def main_loop():
 
 # ---------------------------- 启动 ----------------------------
 if __name__ == "__main__":
-    main_loop()
+    import argparse
 
+    parser = argparse.ArgumentParser(description="MJJVM 监控脚本 (支持方糖通知)")
+    parser.add_argument("--test", action="store_true", help="发送一条测试推送后退出")
+    args = parser.parse_args()
+
+    if args.test:
+        send_ftqq([{
+            "type": "上架",
+            "name": "测试商品",
+            "stock": 10,
+            "config": "2C/2G",
+            "member_only": 2,
+            "url": "https://www.mjjvm.com",
+            "region": "测试区"
+        }])
+        logger.info("✅ 测试推送已发送")
+        sys.exit(0)
+
+    main_loop()
