@@ -8,7 +8,7 @@ BOT_DIR="/opt/mjjvm"
 ENV_FILE="$BOT_DIR/.env"
 VENV_DIR="$BOT_DIR/mjjvm-venv"
 SERVICE_FILE="/etc/systemd/system/mjjvm.service"
-SCRIPT_URL="https://raw.githubusercontent.com/ryty1/MJJVM/main/2.py"
+SCRIPT_URL="https://raw.githubusercontent.com/liaox321/mjjvm/main/2.py"
 SCRIPT_PATH="$BOT_DIR/2.py"
 
 # 安装前检查 Python 和 curl
@@ -16,7 +16,7 @@ check_and_install() {
     if ! command -v python3 >/dev/null 2>&1; then
         echo "❌ 未找到 Python3，正在安装..."
         sudo apt-get update -y  >/dev/null 2>&1
-        sudo apt-get install -y python3 python3-pip  >/dev/null 2>&1
+        sudo apt-get install -y python3 python3-pip -y >/dev/null 2>&1
         echo "✅ Python3 安装完成"
     else
         echo "✅ Python3 已安装"
@@ -24,7 +24,7 @@ check_and_install() {
 
     if ! command -v curl >/dev/null 2>&1; then
         echo "❌ 未找到 curl，正在安装..."
-        sudo apt-get install -y curl  >/dev/null 2>&1
+        sudo apt-get install -y curl >/dev/null 2>&1
         echo "✅ curl 安装完成"
     else
         echo "✅ curl 已安装"
@@ -35,8 +35,7 @@ echo "请选择操作："
 echo "1. 安装 MJJVM 监控"
 echo "2. 修改 .env 配置"
 echo "3. 卸载 MJJVM 监控"
-echo "4. 返回 VIP 工具箱"
-read -p "输入选项 [1-4]: " ACTION
+read -p "输入选项 [1-3]: " ACTION
 
 case $ACTION in
 1)
@@ -90,12 +89,11 @@ EOF
 
     REQUIRED_PKG=("python-dotenv" "requests" "beautifulsoup4")
     for pkg in "${REQUIRED_PKG[@]}"; do
-        PKG_NAME="${pkg%%=*}"
-        if ! "$VENV_DIR/bin/python" -m pip show "$PKG_NAME" >/dev/null 2>&1; then
+        if ! "$VENV_DIR/bin/python" -m pip show "$pkg" >/dev/null 2>&1; then
             echo "安装 $pkg ..."
             "$VENV_DIR/bin/python" -m pip install "$pkg" >/dev/null 2>&1
         else
-            echo "已安装: $PKG_NAME （跳过）"
+            echo "已安装: $pkg （跳过）"
         fi
     done
     echo "✅ 依赖安装完成（均安装在 $VENV_DIR）"
@@ -109,8 +107,8 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/mjjvm
-ExecStart=/opt/mjjvm/mjjvm-venv/bin/python /opt/mjjvm/2.py
+WorkingDirectory=$BOT_DIR
+ExecStart=$VENV_DIR/bin/python $SCRIPT_PATH
 Restart=always
 
 [Install]
@@ -135,40 +133,20 @@ EOF
     source "$ENV_FILE"
 
     CHANGED=0
-    declare -A VAR_LABELS=(
-        ["SCKEY"]="方糖 SendKey"
-    )
-
-    update_var() {
-        local var_name=$1
-        local label=${VAR_LABELS[$var_name]:-$var_name}
-        local current_value=${!var_name}
-        echo -e "\n当前 $label = $current_value"
-        read -p "是否修改 $label? (y/n): " choice
-        if [[ "$choice" == "y" ]]; then
-            read -p "请输入新的 $label: " new_value
-            echo "$var_name=$new_value" >> "$BOT_DIR/.env.tmp"
-            CHANGED=1
-        else
-            echo "$var_name=$current_value" >> "$BOT_DIR/.env.tmp"
-        fi
-    }
-
-    rm -f "$BOT_DIR/.env.tmp"
-    update_var "SCKEY"
-
-    mv "$BOT_DIR/.env.tmp" "$ENV_FILE"
-    echo "✅ 配置已保存：$ENV_FILE"
+    echo -e "\n当前 SendKey = $SCKEY"
+    read -p "是否修改 SendKey? (y/n): " choice
+    if [[ "$choice" == "y" ]]; then
+        read -p "请输入新的 SendKey: " new_value
+        echo "SCKEY=$new_value" > "$ENV_FILE"
+        CHANGED=1
+    fi
 
     if [[ $CHANGED -eq 1 ]]; then
         sudo systemctl restart mjjvm >/dev/null 2>&1
-        echo "✅ 服务已重启：mjjvm 监控"
+        echo "✅ 配置已修改并重启服务"
     else
         echo "ℹ️ 配置未修改，服务无需重启"
     fi
-
-    echo "查看状态： sudo systemctl status mjjvm"
-    echo "查看日志： sudo journalctl -u mjjvm -f"
     ;;
 3)
     echo "⚠️ 警告：此操作会删除 mjjvm 监控 服务和相关文件，请确认！"
@@ -198,11 +176,9 @@ EOF
 
     echo "✅ 卸载完成，已删除所有相关文件"
     ;;
-4)
-    bash <(curl -Ls https://raw.githubusercontent.com/ryty1/Checkin/refs/heads/main/vip.sh)
-    ;;
 *)
     echo "❌ 无效选项"
     exit 1
     ;;
 esac
+
