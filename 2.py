@@ -20,10 +20,10 @@ URLS = {
     "特别活动区": "https://www.mjjvm.com/cart?fid=1&gid=6",
 }
 
-# 加载 .env 文件
+# ---------------------------- 加载 .env ----------------------------
 load_dotenv()
-SCKEY = os.getenv("SCKEY")
-COOKIE = os.getenv("MJJVM_COOKIE")  # 在 .env 文件中添加真实 Cookie: MJJVM_COOKIE="PHPSESSID=xxx; other_cookie=xxx"
+SCKEY = os.getenv("SCKEY", "")
+MJJVM_COOKIE = os.getenv("MJJVM_COOKIE", "")  # 动态 Cookie
 
 INTERVAL = 60  # 秒
 DATA_FILE = "stock_data.json"
@@ -40,25 +40,6 @@ logger.addHandler(console_handler)
 file_handler = RotatingFileHandler(LOG_FILE, maxBytes=1*1024*1024, backupCount=1, encoding="utf-8")
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
-
-# ---------------------------- Cloudscraper 会话 ----------------------------
-scraper = cloudscraper.create_scraper(
-    browser={
-        "browser": "chrome",
-        "platform": "macos",
-        "mobile": False
-    }
-)
-
-HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.9",
-    "Cache-Control": "max-age=0",
-    "Referer": "https://www.mjjvm.com",
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-    "Cookie": COOKIE
-}
 
 # ---------------------------- 工具函数 ----------------------------
 def load_previous_data():
@@ -91,6 +72,7 @@ def send_ftqq(messages):
     if not messages or not SCKEY:
         return
     url = f"https://sctapi.ftqq.com/{SCKEY}.send"
+
     for msg in messages:
         region = msg.get("region", "未知地区")
         member_text = ""
@@ -123,6 +105,18 @@ def send_ftqq(messages):
                 logger.error("❌ 方糖推送失败 %s: %s", resp.status_code, resp.text)
         except Exception as e:
             logger.error("❌ 方糖推送异常: %s", e)
+
+# ---------------------------- Cloudscraper ----------------------------
+HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Cache-Control": "max-age=0",
+    "Referer": "https://www.mjjvm.com",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    "Cookie": MJJVM_COOKIE
+}
+
+scraper = cloudscraper.create_scraper()  # 自动识别平台
 
 # ---------------------------- 页面解析 ----------------------------
 def parse_products(html, url, region):
@@ -165,9 +159,6 @@ def parse_products(html, url, region):
             except:
                 stock = 0
 
-        price_tag = card.select_one("a.cart-num")
-        price = price_tag.get_text(strip=True) if price_tag else "未知"
-
         link_tag = card.select_one("div.card-footer a")
         pid = None
         if link_tag and "pid=" in link_tag.get("href", ""):
@@ -177,7 +168,6 @@ def parse_products(html, url, region):
             "name": name,
             "config": config,
             "stock": stock,
-            "price": price,
             "member_only": member_only,
             "url": url,
             "pid": pid,
@@ -280,11 +270,6 @@ def main_loop():
         grouped_data = group_by_region(all_products)
         save_data(grouped_data)
         prev_data = all_products
-
-        logger.info("当前库存快照:")
-        for name, info in all_products.items():
-            member_name = MEMBER_NAME_MAP.get(info.get("member_only", 0), "会员")
-            logger.info("- [%s] %s  |  库存: %s  |  %s", info.get("region", "未知地区"), info["name"], info["stock"], member_name)
 
         time.sleep(INTERVAL)
 
