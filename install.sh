@@ -116,6 +116,7 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 Environment=PATH=$VENV_DIR/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=$ENV_FILE
 
 [Install]
 WantedBy=multi-user.target
