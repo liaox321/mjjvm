@@ -21,29 +21,17 @@ URLS = {
     "特别活动区": "https://www.mjjvm.com/cart?fid=1&gid=6",
 }
 
-BASE_HEADERS = {
+HEADERS_TEMPLATE = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Cache-Control": "max-age=0",
     "Referer": "https://www.mjjvm.com",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
 }
-
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:117.0) Gecko/20100101 Firefox/117.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13.5; rv:117.0) Gecko/20100101 Firefox/117.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36 Edg/115.0.1901.188",
-]
 
 INTERVAL = 60  # 秒
 DATA_FILE = "stock_data.json"
 LOG_FILE = "stock_out.log"
-
-# ---------------------------- Cloudflare Scraper ----------------------------
-scraper = cloudscraper.create_scraper()
-
-# ---------------------------- .env ----------------------------
-load_dotenv()
-SCKEY = os.getenv("SCKEY")
 
 # ---------------------------- 日志 ----------------------------
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -58,15 +46,6 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 # ---------------------------- 工具函数 ----------------------------
-def get_random_headers():
-    headers = BASE_HEADERS.copy()
-    headers["User-Agent"] = random.choice(USER_AGENTS)
-    headers["Accept-Language"] = random.choice([
-        "zh-CN,zh;q=0.9", "zh;q=0.9,en;q=0.8", "en-US,en;q=0.9"
-    ])
-    headers["Cache-Control"] = random.choice(["max-age=0", "no-cache", "no-store"])
-    return headers
-
 def load_previous_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -97,7 +76,6 @@ def send_ftqq(messages):
     if not messages or not SCKEY:
         return
     url = f"https://sctapi.ftqq.com/{SCKEY}.send"
-
     for msg in messages:
         region = msg.get("region", "未知地区")
         member_text = ""
@@ -135,6 +113,7 @@ def send_ftqq(messages):
 def parse_products(html, url, region):
     soup = BeautifulSoup(html, "html.parser")
     products = {}
+
     MEMBER_MAP = {
         "成员": 1,
         "白银会员": 2,
@@ -192,8 +171,22 @@ def parse_products(html, url, region):
 
     return products
 
+# ---------------------------- 随机 Cookie 生成 ----------------------------
+def random_cookie():
+    cookies = [
+        # 这里可以加入多个示例 Cookie
+        "PHPSESSID=xxxxxxxx; path=/; domain=.mjjvm.com",
+        "PHPSESSID=yyyyyyyy; path=/; domain=.mjjvm.com",
+    ]
+    return random.choice(cookies)
+
 # ---------------------------- 主循环 ----------------------------
 consecutive_fail_rounds = 0
+scraper = cloudscraper.create_scraper()
+
+# 加载 .env 文件
+load_dotenv()
+SCKEY = os.getenv("SCKEY")
 
 def main_loop():
     global consecutive_fail_rounds
@@ -215,8 +208,10 @@ def main_loop():
         for region, url in URLS.items():
             success_this_url = False
             for attempt in range(3):
+                headers = HEADERS_TEMPLATE.copy()
+                headers["Cookie"] = random_cookie()
                 try:
-                    resp = scraper.get(url, headers=get_random_headers(), timeout=10)
+                    resp = scraper.get(url, headers=headers, timeout=10)
                     resp.raise_for_status()
                     products = parse_products(resp.text, url, region)
                     all_products.update(products)
@@ -225,7 +220,7 @@ def main_loop():
                     break
                 except Exception as e:
                     logger.warning("[%s] 请求失败 (第 %d 次尝试): %s", region, attempt + 1, e)
-                    time.sleep(2 + random.random() * 3)
+                    time.sleep(2)
 
             if success_this_url:
                 success = True
