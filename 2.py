@@ -1,6 +1,6 @@
 #!/opt/mjjvm/mjjvm-venv/bin/python3
 # -*- coding: utf-8 -*-
-import requests
+import cloudscraper   # ✅ 新增，替代 requests
 from bs4 import BeautifulSoup
 import time
 import json
@@ -27,6 +27,9 @@ HEADERS = {
     "Referer": "https://www.mjjvm.com",
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
 }
+
+# ✅ Cloudflare Scraper
+scraper = cloudscraper.create_scraper()
 
 # 加载 .env 文件
 load_dotenv()
@@ -106,7 +109,7 @@ def send_ftqq(messages):
 """.strip()
 
         try:
-            resp = requests.post(url, data={"title": title, "desp": content}, timeout=10)
+            resp = scraper.post(url, data={"title": title, "desp": content}, timeout=10)
             if resp.status_code == 200:
                 logger.info("✅ 方糖推送成功: %s", title)
             else:
@@ -200,7 +203,7 @@ def main_loop():
             success_this_url = False
             for attempt in range(3):
                 try:
-                    resp = requests.get(url, headers=HEADERS, timeout=10)
+                    resp = scraper.get(url, headers=HEADERS, timeout=10)
                     resp.raise_for_status()
                     products = parse_products(resp.text, url, region)
                     all_products.update(products)
