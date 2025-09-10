@@ -66,14 +66,12 @@ case $ACTION in
     chmod +x "$SCRIPT_PATH"
     echo "✅ 脚本下载并保存为 $SCRIPT_PATH"
 
-    # 生成 .env，包含 SCKEY 和 MJJVM_COOKIE
+    # 生成 .env，只需 SCKEY
     echo "📝 请按提示输入 ENV 配置（将写入 $ENV_FILE）"
     read -p "请输入方糖的 SendKey: " SCKEY
-    read -p "请输入 MJJVM 的 Cookie (PHPSESSID=xxxx; other_cookie=xxxx): " MJJVM_COOKIE
 
     cat > "$ENV_FILE" <<EOF
 SCKEY=$SCKEY
-MJJVM_COOKIE="$MJJVM_COOKIE"
 EOF
     sudo chown "$RUNNER_USER:$RUNNER_USER" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
@@ -88,7 +86,7 @@ EOF
 
     echo "📦 安装依赖..."
     "$VENV_DIR/bin/python" -m pip install --upgrade pip >/dev/null 2>&1
-    REQUIRED_PKG=("cloudscraper" "beautifulsoup4" "python-dotenv")
+    REQUIRED_PKG=("cloudscraper" "beautifulsoup4" "python-dotenv" "requests")
     for pkg in "${REQUIRED_PKG[@]}"; do
         if ! "$VENV_DIR/bin/python" -m pip show "$pkg" >/dev/null 2>&1; then
             echo "安装 $pkg ..."
@@ -148,18 +146,9 @@ EOF
         CHANGED=1
     fi
 
-    echo -e "\n当前 MJJVM_COOKIE = $MJJVM_COOKIE"
-    read -p "是否修改 MJJVM_COOKIE? (y/n): " choice
-    if [[ "$choice" == "y" ]]; then
-        read -p "请输入新的 MJJVM_COOKIE: " new_cookie
-        MJJVM_COOKIE="$new_cookie"
-        CHANGED=1
-    fi
-
     if [[ $CHANGED -eq 1 ]]; then
         cat > "$ENV_FILE" <<EOF
 SCKEY=$SCKEY
-MJJVM_COOKIE="$MJJVM_COOKIE"
 EOF
         sudo chown "$RUNNER_USER:$RUNNER_USER" "$ENV_FILE"
         chmod 600 "$ENV_FILE"
