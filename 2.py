@@ -13,18 +13,19 @@ from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 
-# network libs
+# Networking
 import cloudscraper
 import requests
 
-# Playwright lazy import (may not be installed)
+# Playwright (optional fallback). If not installed, script still works with cloudscraper only.
+PLAYWRIGHT_AVAILABLE = False
 try:
     from playwright.sync_api import sync_playwright
     PLAYWRIGHT_AVAILABLE = True
 except Exception:
     PLAYWRIGHT_AVAILABLE = False
 
-# ---------------------------- 配置 ----------------------------
+# ---------------------- 配置 ----------------------
 URLS = {
     "白银区": "https://www.mjjvm.com/cart?fid=1&gid=1",
     "黄金区": "https://www.mjjvm.com/cart?fid=1&gid=2",
@@ -37,26 +38,27 @@ ROOT_ORIGIN = "https://www.mjjvm.com"
 INTERVAL = int(os.getenv("INTERVAL", "60"))
 DATA_FILE = "stock_data.json"
 LOG_FILE = "stock_out.log"
+BROWSER_STATE_FILE = "browser_state.json"   # Playwright storage state
 
-# ---------------------------- 环境 / .env ----------------------------
+# ---------------------- 环境 ----------------------
 load_dotenv()
 SCKEY = os.getenv("SCKEY", "").strip()
-MJJVM_COOKIE = os.getenv("MJJVM_COOKIE", "").strip()  # "PHPSESSID=...; cf_clearance=..."
-PROXY = os.getenv("PROXY", "").strip()  # optional proxy like "http://user:pass@host:port"
+MJJVM_COOKIE = os.getenv("MJJVM_COOKIE", "").strip()  # 例如: PHPSESSID=xxx; cf_clearance=xxx
+PROXY = os.getenv("PROXY", "").strip()  # 可选代理
 
-# ---------------------------- 日志 ----------------------------
+# ---------------------- 日志 ----------------------
 warnings.filterwarnings("ignore", category=FutureWarning)
 logger = logging.getLogger("StockMonitor")
 logger.setLevel(logging.INFO)
-fmt = logging.Formatter("[%(asctime)s] %(message)s", "%Y-%m-%d %H:%M:%S")
-ch = logging.StreamHandler(stream=sys.stdout)
-ch.setFormatter(fmt)
-logger.addHandler(ch)
-fh = RotatingFileHandler(LOG_FILE, maxBytes=2*1024*1024, backupCount=2, encoding="utf-8")
-fh.setFormatter(fmt)
-logger.addHandler(fh)
+formatter = logging.Formatter("[%(asctime)s] %(message)s", "%Y-%m-%d %H:%M:%S")
+console_handler = logging.StreamHandler(stream=sys.stdout)
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+file_handler = RotatingFileHandler(LOG_FILE, maxBytes=2*1024*1024, backupCount=2, encoding="utf-8")
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 
-# ---------------------------- UA 列表 ----------------------------
+# ---------------------- UA 列表 ----------------------
 UAS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
@@ -65,7 +67,7 @@ UAS = [
 def random_ua():
     return random.choice(UAS)
 
-# ---------------------------- helpers ----------------------------
+# ---------------------- 帮助函数 ----------------------
 def parse_cookie_string(cookie_str: str) -> dict:
     out = {}
     if not cookie_str:
@@ -102,7 +104,7 @@ def group_by_region(all_products):
 
 MEMBER_NAME_MAP = {1: "社区成员", 2: "白银会员", 3: "黄金会员", 4: "钻石会员", 5: "星曜会员"}
 
-# ---------------------------- 方糖推送 ----------------------------
+# ---------------------- 方糖推送 ----------------------
 def send_ftqq(messages):
     if not SCKEY or not messages:
         if not SCKEY:
@@ -132,12 +134,13 @@ def send_ftqq(messages):
         except Exception as e:
             logger.error("❌ 方糖推送异常: %s", e)
 
-# ---------------------------- cloudscraper session ----------------------------
+# ---------------------- cloudscraper session 与 cookie 注入 ----------------------
 def build_scraper():
     s = cloudscraper.create_scraper()
     if PROXY:
         s.proxies.update({"http": PROXY, "https": PROXY})
         logger.info("使用代理：%s", PROXY)
+    # 把 ENV 中的 cookie 注入
     if MJJVM_COOKIE:
         cd = parse_cookie_string(MJJVM_COOKIE)
         for k, v in cd.items():
@@ -146,43 +149,80 @@ def build_scraper():
             except Exception:
                 s.cookies.set(k, v)
         logger.info("注入 MJJVM_COOKIE: %s", ", ".join(list(cd.keys())))
+    # 如果有持久化的 browser state（Playwright 保存），也注入
+    if os.path.exists(BROWSER_STATE_FILE):
+        try:
+            with open(BROWSER_STATE_FILE, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            for c in state.get("cookies", []):
+                # Playwright cookie structure: {name, value, domain, path, ...}
+                try:
+                    s.cookies.set(c.get("name"), c.get("value"), domain=c.get("domain","www.mjjvm.com"))
+                except Exception:
+                    s.cookies.set(c.get("name"), c.get("value"))
+            logger.info("从 %s 注入 %d 个 cookies 到 cloudscraper", BROWSER_STATE_FILE, len(state.get("cookies", [])))
+        except Exception:
+            logger.debug("加载 browser state 失败（可忽略）", exc_info=True)
     return s
 
-# ---------------------------- Playwright fallback ----------------------------
-def fetch_with_playwright(url: str, cookies: dict | None = None, wait_ms: int = 2500):
-    """返回 (html, cookies_dict) 或 (None, {})"""
+# ---------------------- Playwright 抓取与持久化 ----------------------
+def playwright_fetch_and_save(url: str, inject_cookies: dict | None = None, wait_ms: int = 2500) -> tuple[ str | None, dict ]:
+    """
+    使用 Playwright 抓取页面，保存 storage state 到 BROWSER_STATE_FILE 并返回 html 和 cookie dict。
+    如果 Playwright 不可用则返回 (None, {}).
+    """
     if not PLAYWRIGHT_AVAILABLE:
-        logger.warning("Playwright 未安装，无法使用浏览器抓取。")
+        logger.debug("Playwright 不可用。")
         return None, {}
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
-            context = browser.new_context(user_agent=random_ua(), viewport={"width":1280,"height":800})
-            if cookies:
+            # 尝试传入已有 state 文件以减少 challenge
+            context = None
+            if os.path.exists(BROWSER_STATE_FILE):
+                try:
+                    context = browser.new_context(storage_state=BROWSER_STATE_FILE, user_agent=random_ua(), viewport={"width":1280,"height":800})
+                    logger.debug("Playwright: 使用已有 storage state")
+                except Exception:
+                    context = None
+            if context is None:
+                context = browser.new_context(user_agent=random_ua(), viewport={"width":1280,"height":800})
+            # 如果调用方提供 cookie，注入
+            if inject_cookies:
                 cookie_list = []
-                for k, v in cookies.items():
+                for k, v in inject_cookies.items():
                     cookie_list.append({"name": k, "value": v, "domain": "www.mjjvm.com", "path": "/", "httpOnly": False, "secure": True})
                 try:
                     context.add_cookies(cookie_list)
-                    logger.info("Playwright: 注入 cookies：%s", ", ".join(cookies.keys()))
+                    logger.info("Playwright: 注入 cookies：%s", ", ".join(inject_cookies.keys()))
                 except Exception:
-                    logger.debug("Playwright 注入 cookie 失败（继续）", exc_info=True)
+                    logger.debug("Playwright 注入 cookies 失败（忽略）", exc_info=True)
             page = context.new_page()
             page.goto(url, wait_until="networkidle", timeout=60000)
             page.wait_for_timeout(wait_ms)
             html = page.content()
+            # 保存 storage state（包含 cookies）
+            try:
+                context.storage_state(path=BROWSER_STATE_FILE)
+                logger.info("Playwright: 已将 storage state 保存到 %s", BROWSER_STATE_FILE)
+            except Exception:
+                logger.debug("Playwright: 保存 storage state 失败（忽略）", exc_info=True)
+            # 读取 cookies
             try:
                 cw = context.cookies()
                 browser_cookies = {c["name"]: c["value"] for c in cw if "www.mjjvm.com" in c.get("domain","")}
             except Exception:
                 browser_cookies = {}
-            browser.close()
+            try:
+                browser.close()
+            except Exception:
+                pass
             return html, browser_cookies
     except Exception as e:
-        logger.exception("Playwright 抓取失败: %s", e)
+        logger.exception("Playwright 抓取异常: %s", e)
         return None, {}
 
-# ---------------------------- 页面解析 ----------------------------
+# ---------------------- 页面解析 ----------------------
 def parse_products(html, url, region):
     soup = BeautifulSoup(html, "html.parser")
     products = {}
@@ -227,13 +267,14 @@ def parse_products(html, url, region):
         }
     return products
 
-# ---------------------------- 主循环 ----------------------------
+# ---------------------- 主循环 ----------------------
 consecutive_fail_rounds = 0
 
 def main_loop():
     global consecutive_fail_rounds
     scraper = build_scraper()
-    # 先尝试访问根域（触发 challenge）
+
+    # 访问根域（触发可能的 challenge / 让 cookies 生效）
     try:
         r0 = scraper.get(ROOT_ORIGIN, headers={"User-Agent": random_ua(), "Referer": ROOT_ORIGIN}, timeout=20)
         logger.info("根域访问返回：%s", getattr(r0, "status_code", None))
@@ -281,20 +322,21 @@ def main_loop():
                     time.sleep(2)
 
             if not success_this_url:
-                # fallback to Playwright
+                # 如果 cloudscraper 不通，回退到 Playwright（节制使用）
                 if PLAYWRIGHT_AVAILABLE:
                     logger.info("[%s] cloudscraper 失败，尝试 Playwright 抓取。", region)
+                    # 先把 env 中的 cookie 解析出来注入到 playwright
                     cookie_dict = parse_cookie_string(MJJVM_COOKIE)
-                    html, browser_cookies = fetch_with_playwright(url, cookies=cookie_dict)
+                    html, browser_cookies = playwright_fetch_and_save(url, inject_cookies=cookie_dict)
                     if html:
-                        # 把浏览器拿到的 cookie 回注到 cloudscraper，提高后续成功率
+                        # 把 Playwright 抓到的 cookies 注入 cloudscraper，减少后续浏览器启动
                         try:
                             for k, v in (browser_cookies or {}).items():
                                 scraper.cookies.set(k, v, domain="www.mjjvm.com")
                             if browser_cookies:
                                 logger.info("[%s] 将 Playwright 抓到的 cookies 注入 cloudscraper: %s", region, ", ".join(browser_cookies.keys()))
                         except Exception:
-                            pass
+                            logger.debug("注入 Playwright cookies 到 cloudscraper 时出错（忽略）", exc_info=True)
                         prods = parse_products(html, url, region)
                         all_products.update(prods)
                         success_this_url = True
@@ -366,10 +408,10 @@ def main_loop():
         prev_data = all_products
         time.sleep(INTERVAL)
 
-# ---------------------------- 启动 ----------------------------
+# ---------------------- 启动 ----------------------
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="MJJVM 监控 (cloudscraper + playwright fallback)")
+    parser = argparse.ArgumentParser(description="MJJVM 监控 (cloudscraper + playwright 回退)")
     parser.add_argument("--test", action="store_true", help="发送测试推送后退出")
     args = parser.parse_args()
     if args.test:
