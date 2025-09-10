@@ -1,14 +1,9 @@
 #!/opt/mjjvm/mjjvm-venv/bin/python3
 # -*- coding: utf-8 -*-
-import cloudscraper   # ✅ 新增，替代 requests
+import cloudscraper
 from bs4 import BeautifulSoup
-import time
-import json
-import os
-import sys
-import logging
+import time, json, os, sys, logging, warnings
 from logging.handlers import RotatingFileHandler
-import warnings
 from dotenv import load_dotenv
 
 # ---------------------------- 配置 ----------------------------
@@ -21,15 +16,16 @@ URLS = {
 }
 
 HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "zh-CN,zh;q=0.9",
     "Cache-Control": "max-age=0",
     "Referer": "https://www.mjjvm.com",
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
 }
 
-# ✅ Cloudflare Scraper
-scraper = cloudscraper.create_scraper()
+# ✅ Cloudflare Scraper 初始化
+scraper = cloudscraper.create_scraper(browser="chrome")
+scraper.headers.update(HEADERS)
 
 # 加载 .env 文件
 load_dotenv()
@@ -47,7 +43,7 @@ formatter = logging.Formatter("[%(asctime)s] %(message)s", "%Y-%m-%d %H:%M:%S")
 console_handler = logging.StreamHandler(stream=sys.stdout)
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
-file_handler = RotatingFileHandler(LOG_FILE, maxBytes=1*1024*1024, backupCount=1, encoding="utf-8")
+file_handler = RotatingFileHandler(LOG_FILE, maxBytes=1*1024*1024, backupCount=3, encoding="utf-8")
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
@@ -69,37 +65,21 @@ def group_by_region(all_products):
         grouped.setdefault(region, []).append(info)
     return grouped
 
-# 数字会员值 -> 文字名称映射
-MEMBER_NAME_MAP = {
-    1: "社区成员",
-    2: "白银会员",
-    3: "黄金会员",
-    4: "钻石会员",
-    5: "星曜会员"
-}
+MEMBER_NAME_MAP = {1: "社区成员", 2: "白银会员", 3: "黄金会员", 4: "钻石会员", 5: "星曜会员"}
 
 # ---------------------------- 方糖推送 ----------------------------
 def send_ftqq(messages):
     if not messages or not SCKEY:
         return
     url = f"https://sctapi.ftqq.com/{SCKEY}.send"
-
     for msg in messages:
         region = msg.get("region", "未知地区")
-        member_text = ""
-        if msg.get("member_only", 0):
-            member_name = MEMBER_NAME_MAP.get(msg["member_only"], "会员")
-            member_text = f"要求：{member_name}\n"
-
-        if msg["type"] == "上架":
-            title = f"🟢 上架 - {region}"
-        elif msg["type"] == "库存变化":
-            title = f"🟡 库存变化 - {region}"
-        elif msg["type"] == "售罄":
-            title = f"🔴 售罄 - {region}"
-        else:
-            title = f"⚠️ 报警 - {region}"
-
+        member_text = f"要求：{MEMBER_NAME_MAP.get(msg.get('member_only', 0), '会员')}\n" if msg.get("member_only", 0) else ""
+        title = {
+            "上架": f"🟢 上架 - {region}",
+            "库存变化": f"🟡 库存变化 - {region}",
+            "售罄": f"🔴 售罄 - {region}",
+        }.get(msg["type"], f"⚠️ 报警 - {region}")
         content = f"""
 名称: {msg['name']}
 库存: {msg['stock']}
@@ -107,7 +87,6 @@ def send_ftqq(messages):
 {msg.get('config', '')}
 直达链接: {msg['url']}
 """.strip()
-
         try:
             resp = scraper.post(url, data={"title": title, "desp": content}, timeout=10)
             if resp.status_code == 200:
@@ -158,52 +137,39 @@ def parse_products(html, url, region):
             except:
                 stock = 0
 
-        price_tag = card.select_one("a.cart-num")
-        price = price_tag.get_text(strip=True) if price_tag else "未知"
-
         link_tag = card.select_one("div.card-footer a")
-        pid = None
-        if link_tag and "pid=" in link_tag.get("href", ""):
-            pid = link_tag["href"].split("pid=")[-1]
+        pid = link_tag["href"].split("pid=")[-1] if link_tag and "pid=" in link_tag.get("href", "") else None
 
         products[f"{region} - {name}"] = {
             "name": name,
             "config": config,
             "stock": stock,
-            "price": price,
             "member_only": member_only,
             "url": url,
             "pid": pid,
             "region": region
         }
-
     return products
 
 # ---------------------------- 主循环 ----------------------------
 consecutive_fail_rounds = 0
-
 def main_loop():
     global consecutive_fail_rounds
     prev_data_raw = load_previous_data()
-    prev_data = {}
-    for region, plist in prev_data_raw.items():
-        for p in plist:
-            prev_data[f"{region} - {p['name']}"] = p
+    prev_data = {f"{region} - {p['name']}": p for region, plist in prev_data_raw.items() for p in plist}
 
     logger.info("库存监控启动，每 %s 秒检查一次...", INTERVAL)
-
     while True:
         logger.info("正在检查库存...")
         all_products = {}
-        success_count = 0
-        fail_count = 0
+        success_count = fail_count = 0
         success = False
 
         for region, url in URLS.items():
             success_this_url = False
             for attempt in range(3):
                 try:
-                    resp = scraper.get(url, headers=HEADERS, timeout=10)
+                    resp = scraper.get(url, timeout=10)
                     resp.raise_for_status()
                     products = parse_products(resp.text, url, region)
                     all_products.update(products)
@@ -225,7 +191,6 @@ def main_loop():
 
         if success_count == 0:
             consecutive_fail_rounds += 1
-            logger.warning("本轮全部请求失败，连续失败轮数: %d", consecutive_fail_rounds)
         else:
             consecutive_fail_rounds = 0
 
@@ -240,9 +205,6 @@ def main_loop():
 
         messages = []
         for name, info in all_products.items():
-            if info.get("member_only", 0) == 0:
-                continue
-
             prev_stock = prev_data.get(name, {}).get("stock", 0)
             curr_stock = info["stock"]
             msg_type = None
@@ -254,7 +216,7 @@ def main_loop():
                 msg_type = "库存变化"
 
             if msg_type:
-                msg = {
+                messages.append({
                     "type": msg_type,
                     "name": info["name"],
                     "stock": curr_stock,
@@ -262,8 +224,7 @@ def main_loop():
                     "member_only": info.get("member_only", 0),
                     "url": info['url'],
                     "region": info.get("region", "未知地区")
-                }
-                messages.append(msg)
+                })
                 member_name = MEMBER_NAME_MAP.get(info.get("member_only", 0), "会员")
                 logger.info("%s - %s  |  库存: %s  |  %s", msg_type, info["name"], curr_stock, member_name)
 
@@ -284,7 +245,6 @@ def main_loop():
 # ---------------------------- 启动 ----------------------------
 if __name__ == "__main__":
     import argparse
-
     parser = argparse.ArgumentParser(description="MJJVM 监控脚本 (支持方糖通知)")
     parser.add_argument("--test", action="store_true", help="发送一条测试推送后退出")
     args = parser.parse_args()
@@ -303,3 +263,4 @@ if __name__ == "__main__":
         sys.exit(0)
 
     main_loop()
+
