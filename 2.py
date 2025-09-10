@@ -70,8 +70,8 @@ MEMBER_NAME_MAP = {
 def send_ftqq(messages):
     if not messages or not SCKEY:
         return
+    import requests
     url = f"https://sctapi.ftqq.com/{SCKEY}.send"
-
     for msg in messages:
         region = msg.get("region", "未知地区")
         member_text = ""
@@ -97,7 +97,7 @@ def send_ftqq(messages):
 """.strip()
 
         try:
-            resp = scraper.post(url, data={"title": title, "desp": content}, timeout=10)
+            resp = requests.post(url, data={"title": title, "desp": content}, timeout=10)
             if resp.status_code == 200:
                 logger.info("✅ 方糖推送成功: %s", title)
             else:
@@ -107,11 +107,16 @@ def send_ftqq(messages):
 
 # ---------------------------- Cloudscraper ----------------------------
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
     "Accept-Language": "zh-CN,zh;q=0.9",
-    "Referer": "https://www.mjjvm.com"
+    "Cache-Control": "max-age=0",
+    "Referer": "https://www.mjjvm.com",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
 }
-scraper = cloudscraper.create_scraper(browser={"custom": HEADERS["User-Agent"]})
+
+scraper = cloudscraper.create_scraper(
+    browser={"custom": HEADERS["User-Agent"]}
+)
 
 # ---------------------------- 页面解析 ----------------------------
 def parse_products(html, url, region):
@@ -195,7 +200,7 @@ def main_loop():
             success_this_url = False
             for attempt in range(3):
                 try:
-                    resp = scraper.get(url, timeout=15)
+                    resp = scraper.get(url, headers=HEADERS, timeout=15)
                     resp.raise_for_status()
                     products = parse_products(resp.text, url, region)
                     all_products.update(products)
@@ -204,7 +209,7 @@ def main_loop():
                     break
                 except Exception as e:
                     logger.warning("[%s] 请求失败 (第 %d 次尝试): %s", region, attempt + 1, e)
-                    time.sleep(3)
+                    time.sleep(2)
 
             if success_this_url:
                 success = True
