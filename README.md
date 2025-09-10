@@ -1,4 +1,4 @@
-# MJJVM 库存监控（方糖通知版）
+# MJJVM 库存监控（方糖通知版）v1.0.1
 
 这是一个用于监控 [MJJVM](https://www.mjjvm.com) 商品库存变化的 Python 工具。  
 支持自动检测商品 **上架 / 售罄 / 库存变化**，并通过 **Server酱·方糖通知** 推送到微信。
@@ -54,6 +54,14 @@ sudo systemctl restart mjjvm
 ·停止服务：
 sudo systemctl stop mjjvm
 
+安装依赖
+source /opt/mjjvm/mjjvm-venv/bin/activate
+pip install cloudscraper
+pip install beautifulsoup4
+
+v1.0.1更新
+1.目标站启用了 Cloudflare，
+2.通过cloudscraper/beautifulsoup4库来绕过Cloudflare
 
 🔍 测试推送
 
