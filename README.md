@@ -61,7 +61,7 @@ source /opt/mjjvm/mjjvm-venv/bin/activate
 pip install cloudscraper
 pip install beautifulsoup4
 
-v1.0.1更新
+v1.0.1更新2025年9月10日14时20分
 1.目标站启用了 Cloudflare，
 2.通过cloudscraper/beautifulsoup4库来绕过Cloudflare
 
