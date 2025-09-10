@@ -56,10 +56,7 @@ sudo systemctl restart mjjvm
 ·停止服务：
 sudo systemctl stop mjjvm
 
-安装依赖
-source /opt/mjjvm/mjjvm-venv/bin/activate
-pip install cloudscraper
-pip install beautifulsoup4
+
 
 v1.0.1更新2025年9月10日14时20分
 1.目标站启用了 Cloudflare，
@@ -88,6 +85,10 @@ v1.0.3更新2025年9月10日14时48分
 v1.0.4更新2025年9月10日14时55分
 集成 固定浏览器 Cookie + 真实浏览器 headers + Cloudscraper 会话
 安装时一次性输入方糖 SendKey 和 MJJVM_COOKIE。
+
+v1.0.5更新2025年9月10日17时31分
+用 Playwright来抓取产品页的 HTML 并解析，不再经由 cloudscraper,Playwright 获取页面内容后再用 BeautifulSoup 解析
+整合依赖自动安装
 
 
 🔍 测试推送
