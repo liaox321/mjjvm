@@ -66,11 +66,14 @@ case $ACTION in
     chmod +x "$SCRIPT_PATH"
     echo "✅ 脚本下载并保存为 $SCRIPT_PATH"
 
-    # 生成 .env
+    # 生成 .env，包含 SCKEY 和 MJJVM_COOKIE
     echo "📝 请按提示输入 ENV 配置（将写入 $ENV_FILE）"
     read -p "请输入方糖的 SendKey: " SCKEY
+    read -p "请输入 MJJVM 的 Cookie (PHPSESSID=xxxx; other_cookie=xxxx): " MJJVM_COOKIE
+
     cat > "$ENV_FILE" <<EOF
 SCKEY=$SCKEY
+MJJVM_COOKIE="$MJJVM_COOKIE"
 EOF
     sudo chown "$RUNNER_USER:$RUNNER_USER" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
@@ -132,17 +135,33 @@ EOF
         echo "❌ 未找到 .env 文件，请先安装 mjjvm 监控！"
         exit 1
     fi
-    echo "📝 修改方糖配置（当前配置存储在 $ENV_FILE）"
+    echo "📝 修改 ENV 配置（当前配置存储在 $ENV_FILE）"
     source "$ENV_FILE"
     CHANGED=0
+
     echo -e "\n当前 SendKey = $SCKEY"
     read -p "是否修改 SendKey? (y/n): " choice
     if [[ "$choice" == "y" ]]; then
         read -p "请输入新的 SendKey: " new_value
-        echo "SCKEY=$new_value" > "$ENV_FILE"
+        SCKEY="$new_value"
         CHANGED=1
     fi
+
+    echo -e "\n当前 MJJVM_COOKIE = $MJJVM_COOKIE"
+    read -p "是否修改 MJJVM_COOKIE? (y/n): " choice
+    if [[ "$choice" == "y" ]]; then
+        read -p "请输入新的 MJJVM_COOKIE: " new_cookie
+        MJJVM_COOKIE="$new_cookie"
+        CHANGED=1
+    fi
+
     if [[ $CHANGED -eq 1 ]]; then
+        cat > "$ENV_FILE" <<EOF
+SCKEY=$SCKEY
+MJJVM_COOKIE="$MJJVM_COOKIE"
+EOF
+        sudo chown "$RUNNER_USER:$RUNNER_USER" "$ENV_FILE"
+        chmod 600 "$ENV_FILE"
         sudo systemctl restart mjjvm
         echo "✅ 配置已修改并重启服务"
     else
@@ -175,4 +194,3 @@ EOF
     exit 1
     ;;
 esac
-
