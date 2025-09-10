@@ -10,7 +10,6 @@ import logging
 from logging.handlers import RotatingFileHandler
 import warnings
 from dotenv import load_dotenv
-import random
 
 # ---------------------------- 配置 ----------------------------
 URLS = {
@@ -21,13 +20,10 @@ URLS = {
     "特别活动区": "https://www.mjjvm.com/cart?fid=1&gid=6",
 }
 
-HEADERS_TEMPLATE = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-    "Accept-Language": "zh-CN,zh;q=0.9",
-    "Cache-Control": "max-age=0",
-    "Referer": "https://www.mjjvm.com",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
-}
+# 加载 .env 文件
+load_dotenv()
+SCKEY = os.getenv("SCKEY")
+COOKIE = os.getenv("MJJVM_COOKIE")  # 在 .env 文件中添加真实 Cookie: MJJVM_COOKIE="PHPSESSID=xxx; other_cookie=xxx"
 
 INTERVAL = 60  # 秒
 DATA_FILE = "stock_data.json"
@@ -44,6 +40,25 @@ logger.addHandler(console_handler)
 file_handler = RotatingFileHandler(LOG_FILE, maxBytes=1*1024*1024, backupCount=1, encoding="utf-8")
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
+
+# ---------------------------- Cloudscraper 会话 ----------------------------
+scraper = cloudscraper.create_scraper(
+    browser={
+        "browser": "chrome",
+        "platform": "macos",
+        "mobile": False
+    }
+)
+
+HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Cache-Control": "max-age=0",
+    "Referer": "https://www.mjjvm.com",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+    "Cookie": COOKIE
+}
 
 # ---------------------------- 工具函数 ----------------------------
 def load_previous_data():
@@ -171,22 +186,8 @@ def parse_products(html, url, region):
 
     return products
 
-# ---------------------------- 随机 Cookie 生成 ----------------------------
-def random_cookie():
-    cookies = [
-        # 这里可以加入多个示例 Cookie
-        "PHPSESSID=xxxxxxxx; path=/; domain=.mjjvm.com",
-        "PHPSESSID=yyyyyyyy; path=/; domain=.mjjvm.com",
-    ]
-    return random.choice(cookies)
-
 # ---------------------------- 主循环 ----------------------------
 consecutive_fail_rounds = 0
-scraper = cloudscraper.create_scraper()
-
-# 加载 .env 文件
-load_dotenv()
-SCKEY = os.getenv("SCKEY")
 
 def main_loop():
     global consecutive_fail_rounds
@@ -208,10 +209,8 @@ def main_loop():
         for region, url in URLS.items():
             success_this_url = False
             for attempt in range(3):
-                headers = HEADERS_TEMPLATE.copy()
-                headers["Cookie"] = random_cookie()
                 try:
-                    resp = scraper.get(url, headers=headers, timeout=10)
+                    resp = scraper.get(url, headers=HEADERS, timeout=10)
                     resp.raise_for_status()
                     products = parse_products(resp.text, url, region)
                     all_products.update(products)
