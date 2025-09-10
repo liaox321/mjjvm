@@ -1,4 +1,4 @@
-# MJJVM 库存监控（方糖通知版）v1.0.2
+# MJJVM 库存监控（方糖通知版）v1.0.3
 
 声明：本项目通过AI完成
 
@@ -78,6 +78,13 @@ systemd 服务文件自动写入完整路径和环境
 随机 Accept-Language 和 Cache-Control
 请求失败后延迟随机 2~5 秒再重试
 结合 cloudscraper 自动绕过 Cloudflare 验证
+
+v1.0.3更新2025年9月10日14时48分
+集成 Cloudscraper 会话
+每次请求使用 随机 Cookie，结合真实浏览器 headers
+原有的 库存监控 + 上架/售罄/库存变化判定 + 方糖推送 功能保留
+.env 文件可放 SCKEY 和其他自定义 Cookie
+
 
 🔍 测试推送
 
