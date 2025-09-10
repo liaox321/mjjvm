@@ -26,16 +26,7 @@ LOG_FILE = "stock_out.log"
 
 # ---------------------------- 加载 .env ----------------------------
 load_dotenv()
-SCKEY = os.getenv("SCKEY", "").strip()
-MJJVM_COOKIE = os.getenv("MJJVM_COOKIE", "").strip()  # PHPSESSID + cf_clearance
-
-if not MJJVM_COOKIE:
-    print("⚠️ .env 中未找到 MJJVM_COOKIE")
-    print("请在浏览器中登录 mjjvm.com 后复制 Cookie（PHPSESSID + cf_clearance）")
-    MJJVM_COOKIE = input("请输入 MJJVM_COOKIE: ").strip()
-    if not MJJVM_COOKIE:
-        print("❌ 未提供 MJJVM_COOKIE，脚本退出")
-        sys.exit(1)
+SCKEY = os.getenv("SCKEY", "")
 
 # ---------------------------- 日志 ----------------------------
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -48,18 +39,6 @@ logger.addHandler(console_handler)
 file_handler = RotatingFileHandler(LOG_FILE, maxBytes=1*1024*1024, backupCount=1, encoding="utf-8")
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
-
-# ---------------------------- Cloudscraper ----------------------------
-HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.9",
-    "Cache-Control": "max-age=0",
-    "Referer": "https://www.mjjvm.com",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-    "Cookie": MJJVM_COOKIE
-}
-
-scraper = cloudscraper.create_scraper(browser={"custom": HEADERS["User-Agent"]})
 
 # ---------------------------- 工具函数 ----------------------------
 def load_previous_data():
@@ -92,12 +71,14 @@ def send_ftqq(messages):
     if not messages or not SCKEY:
         return
     url = f"https://sctapi.ftqq.com/{SCKEY}.send"
+
     for msg in messages:
         region = msg.get("region", "未知地区")
         member_text = ""
         if msg.get("member_only", 0):
             member_name = MEMBER_NAME_MAP.get(msg["member_only"], "会员")
             member_text = f"要求：{member_name}\n"
+
         if msg["type"] == "上架":
             title = f"🟢 上架 - {region}"
         elif msg["type"] == "库存变化":
@@ -106,6 +87,7 @@ def send_ftqq(messages):
             title = f"🔴 售罄 - {region}"
         else:
             title = f"⚠️ 报警 - {region}"
+
         content = f"""
 名称: {msg['name']}
 库存: {msg['stock']}
@@ -113,6 +95,7 @@ def send_ftqq(messages):
 {msg.get('config', '')}
 直达链接: {msg['url']}
 """.strip()
+
         try:
             resp = scraper.post(url, data={"title": title, "desp": content}, timeout=10)
             if resp.status_code == 200:
@@ -122,10 +105,19 @@ def send_ftqq(messages):
         except Exception as e:
             logger.error("❌ 方糖推送异常: %s", e)
 
+# ---------------------------- Cloudscraper ----------------------------
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Referer": "https://www.mjjvm.com"
+}
+scraper = cloudscraper.create_scraper(browser={"custom": HEADERS["User-Agent"]})
+
 # ---------------------------- 页面解析 ----------------------------
 def parse_products(html, url, region):
     soup = BeautifulSoup(html, "html.parser")
     products = {}
+
     MEMBER_MAP = {
         "成员": 1,
         "白银会员": 2,
@@ -133,11 +125,13 @@ def parse_products(html, url, region):
         "钻石会员": 4,
         "星曜会员": 5,
     }
+
     for card in soup.select("div.card.cartitem"):
         name_tag = card.find("h4")
         if not name_tag:
             continue
         name = name_tag.get_text(strip=True)
+
         config_items = []
         member_only = 0
         for li in card.select("ul.vps-config li"):
@@ -151,6 +145,7 @@ def parse_products(html, url, region):
             if not matched:
                 config_items.append(text)
         config = "\n".join(config_items)
+
         stock_tag = card.find("p", class_="card-text")
         stock = 0
         if stock_tag:
@@ -158,10 +153,12 @@ def parse_products(html, url, region):
                 stock = int(stock_tag.get_text(strip=True).split("库存：")[-1])
             except:
                 stock = 0
+
         link_tag = card.select_one("div.card-footer a")
         pid = None
         if link_tag and "pid=" in link_tag.get("href", ""):
             pid = link_tag["href"].split("pid=")[-1]
+
         products[f"{region} - {name}"] = {
             "name": name,
             "config": config,
@@ -171,6 +168,7 @@ def parse_products(html, url, region):
             "pid": pid,
             "region": region
         }
+
     return products
 
 # ---------------------------- 主循环 ----------------------------
@@ -183,18 +181,21 @@ def main_loop():
     for region, plist in prev_data_raw.items():
         for p in plist:
             prev_data[f"{region} - {p['name']}"] = p
+
     logger.info("库存监控启动，每 %s 秒检查一次...", INTERVAL)
+
     while True:
         logger.info("正在检查库存...")
         all_products = {}
         success_count = 0
         fail_count = 0
         success = False
+
         for region, url in URLS.items():
             success_this_url = False
             for attempt in range(3):
                 try:
-                    resp = scraper.get(url, headers=HEADERS, timeout=10)
+                    resp = scraper.get(url, timeout=15)
                     resp.raise_for_status()
                     products = parse_products(resp.text, url, region)
                     all_products.update(products)
@@ -203,30 +204,37 @@ def main_loop():
                     break
                 except Exception as e:
                     logger.warning("[%s] 请求失败 (第 %d 次尝试): %s", region, attempt + 1, e)
-                    time.sleep(2)
+                    time.sleep(3)
+
             if success_this_url:
                 success = True
                 success_count += 1
             else:
                 fail_count += 1
                 logger.error("[%s] 请求失败: 尝试 3 次均失败", region)
+
         logger.info("本轮请求完成: 成功 %d / %d, 失败 %d", success_count, len(URLS), fail_count)
+
         if success_count == 0:
             consecutive_fail_rounds += 1
             logger.warning("本轮全部请求失败，连续失败轮数: %d", consecutive_fail_rounds)
         else:
             consecutive_fail_rounds = 0
+
         if consecutive_fail_rounds >= 10:
             send_ftqq([{"type": "报警", "name": "监控", "stock": 0, "region": "系统", "url": "https://www.mjjvm.com"}])
             consecutive_fail_rounds = 0
+
         if not success:
             logger.warning("本轮请求全部失败，跳过数据更新。")
             time.sleep(INTERVAL)
             continue
+
         messages = []
         for name, info in all_products.items():
             if info.get("member_only", 0) == 0:
                 continue
+
             prev_stock = prev_data.get(name, {}).get("stock", 0)
             curr_stock = info["stock"]
             msg_type = None
@@ -236,6 +244,7 @@ def main_loop():
                 msg_type = "售罄"
             elif prev_stock != curr_stock:
                 msg_type = "库存变化"
+
             if msg_type:
                 msg = {
                     "type": msg_type,
@@ -249,19 +258,24 @@ def main_loop():
                 messages.append(msg)
                 member_name = MEMBER_NAME_MAP.get(info.get("member_only", 0), "会员")
                 logger.info("%s - %s  |  库存: %s  |  %s", msg_type, info["name"], curr_stock, member_name)
+
         if messages:
             send_ftqq(messages)
+
         grouped_data = group_by_region(all_products)
         save_data(grouped_data)
         prev_data = all_products
+
         time.sleep(INTERVAL)
 
 # ---------------------------- 启动 ----------------------------
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="MJJVM 监控脚本 (支持方糖通知)")
     parser.add_argument("--test", action="store_true", help="发送一条测试推送后退出")
     args = parser.parse_args()
+
     if args.test:
         send_ftqq([{
             "type": "上架",
@@ -274,5 +288,5 @@ if __name__ == "__main__":
         }])
         logger.info("✅ 测试推送已发送")
         sys.exit(0)
-    main_loop()
 
+    main_loop()
