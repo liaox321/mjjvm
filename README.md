@@ -1,4 +1,4 @@
-# MJJVM 库存监控（方糖通知版）v1.0.1
+# MJJVM 库存监控（方糖通知版）v1.0.2
 
 声明：本项目通过AI完成
 
@@ -64,6 +64,20 @@ pip install beautifulsoup4
 v1.0.1更新2025年9月10日14时20分
 1.目标站启用了 Cloudflare，
 2.通过cloudscraper/beautifulsoup4库来绕过Cloudflare
+
+v1.0.2更新2025年9月10日14时34分
+1.install.sh
+Python 脚本和 systemd 配置兼容，同时支持 cloudscraper 依赖安装，改进如下：
+安装依赖列表更新为：cloudscraper、beautifulsoup4、python-dotenv
+systemd 服务文件自动写入完整路径和环境
+修复一些重复 -y 参数和命令顺序问题
+安装、修改、卸载三大功能完整
+2.  2.py
+✅ 改动说明：
+每次请求时随机选择 User-Agent
+随机 Accept-Language 和 Cache-Control
+请求失败后延迟随机 2~5 秒再重试
+结合 cloudscraper 自动绕过 Cloudflare 验证
 
 🔍 测试推送
 
