@@ -5,7 +5,7 @@ set -euo pipefail
 # - 创建 venv（/opt/mjjvm/mjjvm-venv）
 # - 安装依赖（cloudscraper, beautifulsoup4, python-dotenv, requests, playwright）
 # - 安装 Playwright 浏览器二进制（python -m playwright install）
-# - 生成 .env（SCKEY, MJJVM_COOKIE 和 MJJBOX_COOKIE）
+# - 生成 .env（SCKEY, MJJVM_COOKIE, MJJBOX_COOKIE 和 COOKIE_CHECK_INTERVAL）
 # - 写入 systemd 服务并启动
 
 RUNNER_USER=${SUDO_USER:-$USER}
@@ -81,16 +81,26 @@ case $ACTION in
     chmod +x "$SCRIPT_PATH"
     echo "✅ 脚本保存为 $SCRIPT_PATH"
 
-    # 生成 .env，包含 SCKEY、MJJVM_COOKIE 和 MJJBOX_COOKIE（可留空）
+    # 生成 .env，包含 SCKEY、MJJVM_COOKIE、MJJBOX_COOKIE 和 COOKIE_CHECK_INTERVAL
     echo "📝 请按提示输入 ENV 配置（将写入 $ENV_FILE）"
     read -p "请输入方糖的 SendKey (空则跳过推送配置): " SCKEY
     read -p "请输入 MJJVM 的 Cookie (示例: PHPSESSID=xxxx; cf_clearance=xxxx) (可留空): " MJJVM_COOKIE
     read -p "请输入 MJJBOX 的 Cookie (用于签到功能) (示例: session=xxxx; token=xxxx) (可留空): " MJJBOX_COOKIE
+    
+    # 设置 Cookie 保活检查间隔（秒），默认 4 小时
+    COOKIE_CHECK_INTERVAL=14400
+    echo -e "\n🔄 Cookie 保活检查间隔（秒）"
+    echo "默认值 14400 秒（4 小时）"
+    read -p "请输入间隔时间（直接回车使用默认值）: " input_interval
+    if [ -n "$input_interval" ]; then
+        COOKIE_CHECK_INTERVAL=$input_interval
+    fi
 
     # 防止在 .env 中出现多余双引号
     printf "%s\n" "SCKEY=${SCKEY}" > /tmp/mjjvm_env.tmp
     printf "%s\n" "MJJVM_COOKIE=${MJJVM_COOKIE}" >> /tmp/mjjvm_env.tmp
     printf "%s\n" "MJJBOX_COOKIE=${MJJBOX_COOKIE}" >> /tmp/mjjvm_env.tmp
+    printf "%s\n" "COOKIE_CHECK_INTERVAL=${COOKIE_CHECK_INTERVAL}" >> /tmp/mjjvm_env.tmp
     sudo mv /tmp/mjjvm_env.tmp "$ENV_FILE"
     sudo chown "$RUNNER_USER:$RUNNER_USER" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
@@ -167,12 +177,21 @@ EOF
     echo "查看实时日志： sudo journalctl -u mjjvm -f"
     
     # 提供测试命令
-    echo -e "\n🔄 您可以通过以下命令测试签到功能："
-    echo "sudo -u $RUNNER_USER $VENV_DIR/bin/python $SCRIPT_PATH --sign-test"
-    echo "此命令将测试签到功能并发送测试通知到微信"
+    echo -e "\n🔄 您可以通过以下命令测试功能："
+    echo "sudo -u $RUNNER_USER $VENV_DIR/bin/python $SCRIPT_PATH --test"
+    echo "此命令将测试库存监控功能并发送测试通知"
     
-    # 提醒用户关于签到时间
+    echo -e "\n🔄 测试签到功能："
+    echo "sudo -u $RUNNER_USER $VENV_DIR/bin/python $SCRIPT_PATH --sign-test"
+    echo "此命令将测试签到功能并发送测试通知"
+    
+    echo -e "\n🔄 测试 Cookie 保活功能："
+    echo "sudo -u $RUNNER_USER $VENV_DIR/bin/python $SCRIPT_PATH --cookie-test"
+    echo "此命令将测试 Cookie 状态并发送测试通知"
+    
+    # 提醒用户关于签到和保活时间
     echo -e "\n⏰ 签到功能将在每天上午8点自动执行"
+    echo "🔄 Cookie 保活检查每 $COOKIE_CHECK_INTERVAL 秒（约 $(($COOKIE_CHECK_INTERVAL/3600)) 小时）执行一次"
     ;;
 
 2)
@@ -205,10 +224,18 @@ EOF
         read -p "请输入新的 MJJBOX_COOKIE (示例: session=xxxx; token=xxxx) (留空则清空): " new_mjjbox_cookie
         MJJBOX_COOKIE="$new_mjjbox_cookie"
     fi
+    
+    echo -e "\n当前 Cookie 保活检查间隔 = ${COOKIE_CHECK_INTERVAL:-14400} 秒"
+    read -p "是否修改间隔时间? (y/n): " choice
+    if [[ "$choice" == "y" ]]; then
+        read -p "请输入新的间隔时间（秒）: " new_interval
+        COOKIE_CHECK_INTERVAL="$new_interval"
+    fi
 
     printf "%s\n" "SCKEY=${SCKEY}" > /tmp/mjjvm_env.tmp
     printf "%s\n" "MJJVM_COOKIE=${MJJVM_COOKIE}" >> /tmp/mjjvm_env.tmp
     printf "%s\n" "MJJBOX_COOKIE=${MJJBOX_COOKIE}" >> /tmp/mjjvm_env.tmp
+    printf "%s\n" "COOKIE_CHECK_INTERVAL=${COOKIE_CHECK_INTERVAL}" >> /tmp/mjjvm_env.tmp
     sudo mv /tmp/mjjvm_env.tmp "$ENV_FILE"
     sudo chown "$RUNNER_USER:$RUNNER_USER" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
