@@ -1,421 +1,648 @@
-#!/opt/mjjvm/mjjvm-venv/bin/python3
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from __future__ import annotations
 
 import os
 import sys
 import time
-import json
 import random
 import logging
-import warnings
-from logging.handlers import RotatingFileHandler
-from dotenv import load_dotenv
-from bs4 import BeautifulSoup
-
-# Networking
-import cloudscraper
+import json
+import re
 import requests
+from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+from playwright.sync_api import sync_playwright
 
-# Playwright (optional fallback). If not installed, script still works with cloudscraper only.
-PLAYWRIGHT_AVAILABLE = False
-try:
-    from playwright.sync_api import sync_playwright
-    PLAYWRIGHT_AVAILABLE = True
-except Exception:
-    PLAYWRIGHT_AVAILABLE = False
+# 日志配置
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/opt/mjjvm/stock_out.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger('mjjvm_monitor')
 
-# ---------------------- 配置 ----------------------
-URLS = {
-    "白银区": "https://www.mjjvm.com/cart?fid=1&gid=1",
-    "黄金区": "https://www.mjjvm.com/cart?fid=1&gid=2",
-    "钻石区": "https://www.mjjvm.com/cart?fid=1&gid=3",
-    "星曜区": "https://www.mjjvm.com/cart?fid=1&gid=4",
-    "特别活动区": "https://www.mjjvm.com/cart?fid=1&gid=6",
-}
+# 加载环境变量
+env_path = '/opt/mjjvm/.env'
+if not os.path.exists(env_path):
+    logger.error(f"❌ 配置文件 {env_path} 不存在!")
+    sys.exit(1)
 
-ROOT_ORIGIN = "https://www.mjjvm.com"
-INTERVAL = int(os.getenv("INTERVAL", "60"))
-DATA_FILE = "stock_data.json"
-LOG_FILE = "stock_out.log"
-BROWSER_STATE_FILE = "browser_state.json"   # Playwright storage state
+load_dotenv(env_path)
 
-# ---------------------- 环境 ----------------------
-load_dotenv()
-SCKEY = os.getenv("SCKEY", "").strip()
-MJJVM_COOKIE = os.getenv("MJJVM_COOKIE", "").strip()  # 例如: PHPSESSID=xxx; cf_clearance=xxx
-PROXY = os.getenv("PROXY", "").strip()  # 可选代理
+SCKEY = os.getenv('SCKEY')
+MJJVM_COOKIE = os.getenv('MJJVM_COOKIE')
+MJJBOX_URL = os.getenv('MJJBOX_URL', 'https://mjjbox.com')
+MJJBOX_COOKIE = os.getenv('MJJBOX_COOKIE')
+MJJBOX_REFERER = os.getenv('MJJBOX_REFERER', 'https://mjjbox.com/user')
 
-# ---------------------- 日志 ----------------------
-warnings.filterwarnings("ignore", category=FutureWarning)
-logger = logging.getLogger("StockMonitor")
-logger.setLevel(logging.INFO)
-formatter = logging.Formatter("[%(asctime)s] %(message)s", "%Y-%m-%d %H:%M:%S")
-console_handler = logging.StreamHandler(stream=sys.stdout)
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
-file_handler = RotatingFileHandler(LOG_FILE, maxBytes=2*1024*1024, backupCount=2, encoding="utf-8")
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
+if not SCKEY:
+    logger.error("❌ SCKEY 未配置!")
+    sys.exit(1)
 
-# ---------------------- UA 列表 ----------------------
-UAS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
-]
-def random_ua():
-    return random.choice(UAS)
+# 上次库存数据存储路径
+STOCK_FILE = '/opt/mjjvm/stock_history.json'
+# 上次签到日期存储路径
+SIGN_FILE = '/opt/mjjvm/last_sign_date'
+# 签到统计数据存储路径
+SIGN_STATS_FILE = '/opt/mjjvm/sign_stats.json'
 
-# ---------------------- 帮助函数 ----------------------
-def parse_cookie_string(cookie_str: str) -> dict:
-    out = {}
-    if not cookie_str:
-        return out
-    for part in cookie_str.split(";"):
-        part = part.strip()
-        if not part:
-            continue
-        if "=" in part:
-            k, v = part.split("=", 1)
-            out[k.strip()] = v.strip()
-    return out
-
-def load_previous_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            logger.warning("读取旧数据失败，忽略旧文件。")
-            return {}
-    return {}
-
-def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def group_by_region(all_products):
-    grouped = {}
-    for key, info in all_products.items():
-        region = info.get("region", "未知地区")
-        grouped.setdefault(region, []).append(info)
-    return grouped
-
-MEMBER_NAME_MAP = {1: "社区成员", 2: "白银会员", 3: "黄金会员", 4: "钻石会员", 5: "星曜会员"}
-
-# ---------------------- 方糖推送 ----------------------
-def send_ftqq(messages):
-    if not SCKEY or not messages:
-        if not SCKEY:
-            logger.info("SCKEY 未配置，跳过方糖推送。")
-        return
-    url = f"https://sctapi.ftqq.com/{SCKEY}.send"
-    for msg in messages:
-        region = msg.get("region", "未知地区")
-        member_text = ""
-        if msg.get("member_only", 0):
-            member_text = f"要求：{MEMBER_NAME_MAP.get(msg['member_only'], '会员')}\n"
-        if msg["type"] == "上架":
-            title = f"🟢 上架 - {region}"
-        elif msg["type"] == "库存变化":
-            title = f"🟡 库存变化 - {region}"
-        elif msg["type"] == "售罄":
-            title = f"🔴 售罄 - {region}"
-        else:
-            title = f"⚠️ 报警 - {region}"
-        content = f"名称: {msg['name']}\n库存: {msg['stock']}\n{member_text}{msg.get('config','')}\n直达链接: {msg['url']}"
-        try:
-            resp = requests.post(url, data={"title": title, "desp": content}, timeout=10)
-            if resp.status_code == 200:
-                logger.info("✅ 方糖推送成功: %s", title)
+def send_notification(title, content):
+    """
+    通过Server酱发送通知
+    """
+    if not SCKEY:
+        logger.error("❌ SCKEY未配置，无法发送通知")
+        return False
+    
+    try:
+        url = f"https://sctapi.ftqq.com/{SCKEY}.send"
+        data = {
+            'title': title,
+            'desp': content
+        }
+        response = requests.post(url, data=data, timeout=10)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('code') == 0:
+                logger.info(f"✅ 通知发送成功: {title}")
+                return True
             else:
-                logger.error("❌ 方糖推送失败 %s: %s", resp.status_code, resp.text)
-        except Exception as e:
-            logger.error("❌ 方糖推送异常: %s", e)
+                logger.error(f"❌ 通知发送失败: {result.get('message')}")
+        else:
+            logger.error(f"❌ 通知发送失败，HTTP状态码: {response.status_code}")
+    
+    except Exception as e:
+        logger.error(f"❌ 发送通知时出错: {str(e)}")
+    
+    return False
 
-# ---------------------- cloudscraper session 与 cookie 注入 ----------------------
-def build_scraper():
-    s = cloudscraper.create_scraper()
-    if PROXY:
-        s.proxies.update({"http": PROXY, "https": PROXY})
-        logger.info("使用代理：%s", PROXY)
-    # 把 ENV 中的 cookie 注入
-    if MJJVM_COOKIE:
-        cd = parse_cookie_string(MJJVM_COOKIE)
-        for k, v in cd.items():
-            try:
-                s.cookies.set(k, v, domain="www.mjjvm.com")
-            except Exception:
-                s.cookies.set(k, v)
-        logger.info("注入 MJJVM_COOKIE: %s", ", ".join(list(cd.keys())))
-    # 如果有持久化的 browser state（Playwright 保存），也注入
-    if os.path.exists(BROWSER_STATE_FILE):
-        try:
-            with open(BROWSER_STATE_FILE, "r", encoding="utf-8") as f:
-                state = json.load(f)
-            for c in state.get("cookies", []):
-                # Playwright cookie structure: {name, value, domain, path, ...}
-                try:
-                    s.cookies.set(c.get("name"), c.get("value"), domain=c.get("domain","www.mjjvm.com"))
-                except Exception:
-                    s.cookies.set(c.get("name"), c.get("value"))
-            logger.info("从 %s 注入 %d 个 cookies 到 cloudscraper", BROWSER_STATE_FILE, len(state.get("cookies", [])))
-        except Exception:
-            logger.debug("加载 browser state 失败（可忽略）", exc_info=True)
-    return s
-
-# ---------------------- Playwright 抓取与持久化 ----------------------
-def playwright_fetch_and_save(url: str, inject_cookies: dict | None = None, wait_ms: int = 2500) -> tuple[ str | None, dict ]:
+def get_stock_data():
     """
-    使用 Playwright 抓取页面，保存 storage state 到 BROWSER_STATE_FILE 并返回 html 和 cookie dict。
-    如果 Playwright 不可用则返回 (None, {}).
+    使用Playwright获取库存页面HTML
     """
-    if not PLAYWRIGHT_AVAILABLE:
-        logger.debug("Playwright 不可用。")
-        return None, {}
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
-            # 尝试传入已有 state 文件以减少 challenge
-            context = None
-            if os.path.exists(BROWSER_STATE_FILE):
-                try:
-                    context = browser.new_context(storage_state=BROWSER_STATE_FILE, user_agent=random_ua(), viewport={"width":1280,"height":800})
-                    logger.debug("Playwright: 使用已有 storage state")
-                except Exception:
-                    context = None
-            if context is None:
-                context = browser.new_context(user_agent=random_ua(), viewport={"width":1280,"height":800})
-            # 如果调用方提供 cookie，注入
-            if inject_cookies:
-                cookie_list = []
-                for k, v in inject_cookies.items():
-                    cookie_list.append({"name": k, "value": v, "domain": "www.mjjvm.com", "path": "/", "httpOnly": False, "secure": True})
-                try:
-                    context.add_cookies(cookie_list)
-                    logger.info("Playwright: 注入 cookies：%s", ", ".join(inject_cookies.keys()))
-                except Exception:
-                    logger.debug("Playwright 注入 cookies 失败（忽略）", exc_info=True)
+            browser = p.chromium.launch()
+            context = browser.new_context()
             page = context.new_page()
-            page.goto(url, wait_until="networkidle", timeout=60000)
-            page.wait_for_timeout(wait_ms)
+            
+            # 设置自定义Cookie
+            if MJJVM_COOKIE:
+                context.add_cookies([
+                    {
+                        'name': 'custom_cookie',
+                        'value': MJJVM_COOKIE,
+                        'domain': 'mjjvm.com',
+                        'path': '/'
+                    }
+                ])
+            
+            # 访问库存页面
+            page.goto("https://mjjvm.com/stock")
+            
+            # 等待内容加载
+            page.wait_for_selector('.product-item', timeout=30000)
+            
+            # 获取页面HTML
             html = page.content()
-            # 保存 storage state（包含 cookies）
-            try:
-                context.storage_state(path=BROWSER_STATE_FILE)
-                logger.info("Playwright: 已将 storage state 保存到 %s", BROWSER_STATE_FILE)
-            except Exception:
-                logger.debug("Playwright: 保存 storage state 失败（忽略）", exc_info=True)
-            # 读取 cookies
-            try:
-                cw = context.cookies()
-                browser_cookies = {c["name"]: c["value"] for c in cw if "www.mjjvm.com" in c.get("domain","")}
-            except Exception:
-                browser_cookies = {}
-            try:
-                browser.close()
-            except Exception:
-                pass
-            return html, browser_cookies
+            
+            # 关闭浏览器
+            browser.close()
+            
+            return html
     except Exception as e:
-        logger.exception("Playwright 抓取异常: %s", e)
-        return None, {}
+        logger.error(f"❌ 获取库存页面失败: {str(e)}")
+        return None
 
-# ---------------------- 页面解析 ----------------------
-def parse_products(html, url, region):
-    soup = BeautifulSoup(html, "html.parser")
-    products = {}
-    MEMBER_MAP = {"成员": 1, "白银会员": 2, "黄金会员": 3, "钻石会员": 4, "星曜会员": 5}
-    for card in soup.select("div.card.cartitem"):
-        name_tag = card.find("h4")
-        if not name_tag:
-            continue
-        name = name_tag.get_text(strip=True)
-        config_items = []
-        member_only = 0
-        for li in card.select("ul.vps-config li"):
-            text = li.get_text(" ", strip=True)
-            matched = False
-            for key, value in MEMBER_MAP.items():
-                if key in text:
-                    member_only = value
-                    matched = True
-                    break
-            if not matched:
-                config_items.append(text)
-        config = "\n".join(config_items)
-        stock = 0
-        stock_tag = card.find("p", class_="card-text")
-        if stock_tag:
+def parse_stock_data(html):
+    """
+    解析库存HTML数据
+    """
+    if not html:
+        return None
+    
+    try:
+        soup = BeautifulSoup(html, 'html.parser')
+        products = []
+        
+        # 找到所有产品项
+        product_items = soup.select('.product-item')
+        if not product_items:
+            logger.warning("⚠️ 未找到产品项，页面结构可能已改变")
+            return None
+        
+        for item in product_items:
             try:
-                stock = int(stock_tag.get_text(strip=True).split("库存：")[-1])
-            except Exception:
-                stock = 0
-        link_tag = card.select_one("div.card-footer a")
-        pid = None
-        if link_tag and "pid=" in link_tag.get("href", ""):
-            pid = link_tag.get("href").split("pid=")[-1]
-        products[f"{region} - {name}"] = {
-            "name": name,
-            "config": config,
-            "stock": stock,
-            "member_only": member_only,
-            "url": url,
-            "pid": pid,
-            "region": region
-        }
-    return products
+                name = item.select_one('.product-name').get_text(strip=True)
+                status = item.select_one('.product-status').get_text(strip=True)
+                stock_text = item.select_one('.product-stock').get_text(strip=True)
+                
+                # 解析库存数量
+                if "库存" in stock_text:
+                    stock = int(stock_text.split("：")[1].split("件")[0].strip())
+                else:
+                    stock = 0
+                
+                products.append({
+                    'name': name,
+                    'status': status,
+                    'stock': stock
+                })
+            except Exception as e:
+                logger.warning(f"⚠️ 解析产品项时出错: {str(e)}")
+                continue
+        
+        return products
+    except Exception as e:
+        logger.error(f"❌ 解析库存数据失败: {str(e)}")
+        return None
 
-# ---------------------- 主循环 ----------------------
-consecutive_fail_rounds = 0
+def save_stock_data(products):
+    """
+    保存当前库存数据到文件
+    """
+    try:
+        with open(STOCK_FILE, 'w', encoding='utf-8') as f:
+            json.dump(products, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"❌ 保存库存数据失败: {str(e)}")
+        return False
+
+def load_stock_data():
+    """
+    从文件加载上次的库存数据
+    """
+    if not os.path.exists(STOCK_FILE):
+        return None
+    
+    try:
+        with open(STOCK_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"❌ 加载库存数据失败: {str(e)}")
+        return None
+
+def compare_stock(old_data, new_data):
+    """
+    比较新旧库存数据，检测变化
+    """
+    changes = []
+    
+    if not old_data or not new_data:
+        return changes
+    
+    # 创建旧数据的名称映射
+    old_map = {item['name']: item for item in old_data}
+    
+    for new_item in new_data:
+        name = new_item['name']
+        new_status = new_item['status']
+        new_stock = new_item['stock']
+        
+        if name in old_map:
+            old_item = old_map[name]
+            old_status = old_item['status']
+            old_stock = old_item['stock']
+            
+            # 检查状态变化
+            if old_status != new_status:
+                if "售罄" in new_status and "售罄" not in old_status:
+                    changes.append({
+                        'type': '售罄',
+                        'name': name,
+                        'old': old_status,
+                        'new': new_status
+                    })
+                elif "在售" in new_status and "在售" not in old_status:
+                    changes.append({
+                        'type': '上架',
+                        'name': name,
+                        'old': old_status,
+                        'new': new_status
+                    })
+            
+            # 检查库存变化
+            elif old_stock != new_stock:
+                changes.append({
+                    'type': '库存变化',
+                    'name': name,
+                    'old': old_stock,
+                    'new': new_stock
+                })
+        else:
+            # 新产品上架
+            changes.append({
+                'type': '上架',
+                'name': name,
+                'old': '无',
+                'new': new_status
+            })
+    
+    # 检查下架产品
+    new_names = {item['name'] for item in new_data}
+    for old_item in old_data:
+        if old_item['name'] not in new_names:
+            changes.append({
+                'type': '下架',
+                'name': old_item['name'],
+                'old': old_item['status'],
+                'new': '已下架'
+            })
+    
+    return changes
+
+def mjjbox_sign_in():
+    """
+    MJJBOX网站签到功能
+    """
+    if not MJJBOX_COOKIE:
+        logger.error("❌ MJJBOX_COOKIE未配置，无法执行签到")
+        return False, "签到失败：未配置Cookie"
+    
+    # 准备请求头
+    headers = {
+        'Cookie': MJJBOX_COOKIE,
+        'Referer': MJJBOX_REFERER,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+    }
+    
+    try:
+        # 尝试签到
+        sign_url = f"{MJJBOX_URL}/user/checkin"
+        response = requests.post(sign_url, headers=headers, timeout=30)
+        
+        # 解析响应
+        if response.status_code == 200:
+            try:
+                result = response.json()
+                if result.get('ret') == 1:
+                    # 签到成功
+                    msg = result.get('msg', '签到成功')
+                    
+                    # 获取积分信息
+                    points_info = get_points_info(headers)
+                    
+                    # 更新签到统计
+                    update_sign_stats(success=True)
+                    
+                    # 组合消息
+                    full_msg = f"{msg}\n\n{points_info}"
+                    return True, full_msg
+                else:
+                    # 签到失败
+                    msg = result.get('msg', '签到失败')
+                    
+                    # 更新签到统计
+                    update_sign_stats(success=False)
+                    
+                    return False, msg
+            except ValueError:
+                # 如果不是JSON响应，尝试解析HTML
+                soup = BeautifulSoup(response.text, 'html.parser')
+                error_msg = soup.find('div', class_='alert-danger')
+                if error_msg:
+                    msg = error_msg.text.strip()
+                    
+                    # 更新签到统计
+                    update_sign_stats(success=False)
+                    
+                    return False, msg
+                else:
+                    # 更新签到统计
+                    update_sign_stats(success=False)
+                    
+                    return False, "签到失败：未知错误"
+        else:
+            # 更新签到统计
+            update_sign_stats(success=False)
+            
+            return False, f"签到失败：HTTP状态码 {response.status_code}"
+            
+    except Exception as e:
+        # 更新签到统计
+        update_sign_stats(success=False)
+        
+        return False, f"签到异常：{str(e)}"
+
+def get_points_info(headers):
+    """
+    获取积分信息（总积分、总签到次数、连续签到次数）
+    """
+    try:
+        # 获取用户信息页面
+        user_url = f"{MJJBOX_URL}/user"
+        response = requests.get(user_url, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 查找积分信息
+            points_text = ""
+            
+            # 尝试查找积分元素
+            points_element = soup.find('span', class_='user-points')
+            if points_element:
+                points_text = points_element.get_text(strip=True)
+            
+            # 尝试查找签到信息
+            sign_info = ""
+            sign_elements = soup.select('.sign-info')
+            for element in sign_elements:
+                sign_info += element.get_text(strip=True) + " "
+            
+            # 使用正则表达式提取数字
+            total_points = extract_number(points_text, "积分")
+            total_signs = extract_number(sign_info, "总签到")
+            consecutive_signs = extract_number(sign_info, "连续签到")
+            
+            # 构建积分信息字符串
+            points_info = ""
+            if total_points is not None:
+                points_info += f"总积分: {total_points}\n"
+            if total_signs is not None:
+                points_info += f"总签到次数: {total_signs}\n"
+            if consecutive_signs is not None:
+                points_info += f"连续签到: {consecutive_signs}天"
+            
+            return points_info if points_info else "未能获取积分信息"
+        else:
+            return f"获取积分信息失败: HTTP {response.status_code}"
+    except Exception as e:
+        logger.error(f"❌ 获取积分信息失败: {str(e)}")
+        return f"获取积分信息失败: {str(e)}"
+
+def extract_number(text, keyword):
+    """
+    从文本中提取数字
+    """
+    if not text:
+        return None
+    
+    # 查找关键词位置
+    idx = text.find(keyword)
+    if idx == -1:
+        return None
+    
+    # 提取数字部分
+    num_text = text[idx + len(keyword):].strip()
+    
+    # 使用正则表达式匹配数字
+    match = re.search(r'\d+', num_text)
+    if match:
+        return int(match.group())
+    
+    return None
+
+def load_sign_stats():
+    """
+    加载签到统计数据
+    """
+    if os.path.exists(SIGN_STATS_FILE):
+        try:
+            with open(SIGN_STATS_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    
+    # 默认统计
+    return {
+        'total_signs': 0,
+        'consecutive_signs': 0,
+        'max_consecutive': 0,
+        'last_success_date': None,
+        'last_fail_date': None
+    }
+
+def save_sign_stats(stats):
+    """
+    保存签到统计数据
+    """
+    try:
+        with open(SIGN_STATS_FILE, 'w') as f:
+            json.dump(stats, f, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"❌ 保存签到统计数据失败: {str(e)}")
+        return False
+
+def update_sign_stats(success=True):
+    """
+    更新签到统计数据
+    """
+    stats = load_sign_stats()
+    today = datetime.now().strftime('%Y-%m-%d')
+    
+    if success:
+        # 更新总签到次数
+        stats['total_signs'] = stats.get('total_signs', 0) + 1
+        
+        # 更新连续签到次数
+        last_success = stats.get('last_success_date')
+        if last_success and (datetime.strptime(last_success, '%Y-%m-%d') + timedelta(days=1)) == datetime.now().date():
+            stats['consecutive_signs'] = stats.get('consecutive_signs', 0) + 1
+        else:
+            stats['consecutive_signs'] = 1
+        
+        # 更新最大连续签到
+        if stats['consecutive_signs'] > stats.get('max_consecutive', 0):
+            stats['max_consecutive'] = stats['consecutive_signs']
+        
+        # 更新最后成功日期
+        stats['last_success_date'] = today
+    else:
+        # 重置连续签到
+        stats['consecutive_signs'] = 0
+        stats['last_fail_date'] = today
+    
+    save_sign_stats(stats)
+    return stats
+
+def check_sign_in():
+    """
+    检查并执行签到，发送通知
+    """
+    # 获取当前日期
+    today = datetime.now().strftime('%Y-%m-%d')
+    
+    # 检查今天是否已经签到
+    if os.path.exists(SIGN_FILE):
+        with open(SIGN_FILE, 'r') as f:
+            last_sign_date = f.read().strip()
+        if last_sign_date == today:
+            logger.info("今天已经签到过了")
+            return True, "今日已签到"
+    
+    # 执行签到
+    success, message = mjjbox_sign_in()
+    
+    # 获取签到统计
+    stats = load_sign_stats()
+    
+    # 准备通知内容
+    title = "📅 MJJBOX签到成功" if success else "⚠️ MJJBOX签到失败"
+    
+    # 组合详细消息
+    full_message = f"{message}\n\n"
+    full_message += f"总签到次数: {stats['total_signs']}\n"
+    full_message += f"连续签到: {stats['consecutive_signs']}天\n"
+    full_message += f"最长连续: {stats['max_consecutive']}天\n"
+    
+    # 发送通知
+    send_notification(title, full_message)
+    
+    # 记录签到日期
+    if success:
+        with open(SIGN_FILE, 'w') as f:
+            f.write(today)
+    
+    return success, message
 
 def main_loop():
-    global consecutive_fail_rounds
-    scraper = build_scraper()
-
-    # 访问根域（触发可能的 challenge / 让 cookies 生效）
-    try:
-        r0 = scraper.get(ROOT_ORIGIN, headers={"User-Agent": random_ua(), "Referer": ROOT_ORIGIN}, timeout=20)
-        logger.info("根域访问返回：%s", getattr(r0, "status_code", None))
-    except Exception as e:
-        logger.warning("根域访问异常：%s", e)
-
-    prev_raw = load_previous_data()
-    prev_data = {}
-    for region, plist in prev_raw.items():
-        for p in plist:
-            prev_data[f"{region} - {p.get('name','')}"] = p
-
-    logger.info("库存监控启动，每 %s 秒检查一次...", INTERVAL)
-
+    """
+    主监控循环
+    """
+    # 初始化错误计数
+    error_count = 0
+    max_errors = 5
+    
     while True:
-        logger.info("正在检查库存...")
-        all_products = {}
-        success_count = 0
-        fail_count = 0
-        any_success = False
-
-        for region, url in URLS.items():
-            success_this_url = False
-            last_err = None
-            for attempt in range(3):
-                headers = {"User-Agent": random_ua(), "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Referer": ROOT_ORIGIN}
-                try:
-                    r = scraper.get(url, headers=headers, timeout=20)
-                    status = getattr(r, "status_code", None)
-                    if status == 403:
-                        logger.warning("[%s] 收到 403 (第 %d 次尝试)。", region, attempt+1)
-                        last_err = "403"
-                        time.sleep(2)
-                        continue
-                    r.raise_for_status()
-                    prods = parse_products(r.text, url, region)
-                    all_products.update(prods)
-                    success_this_url = True
-                    any_success = True
-                    logger.info("[%s] 请求成功 (第 %d 次尝试)", region, attempt+1)
-                    break
-                except Exception as e:
-                    last_err = e
-                    logger.warning("[%s] 请求失败 (第 %d 次尝试): %s", region, attempt+1, e)
-                    time.sleep(2)
-
-            if not success_this_url:
-                # 如果 cloudscraper 不通，回退到 Playwright（节制使用）
-                if PLAYWRIGHT_AVAILABLE:
-                    logger.info("[%s] cloudscraper 失败，尝试 Playwright 抓取。", region)
-                    # 先把 env 中的 cookie 解析出来注入到 playwright
-                    cookie_dict = parse_cookie_string(MJJVM_COOKIE)
-                    html, browser_cookies = playwright_fetch_and_save(url, inject_cookies=cookie_dict)
-                    if html:
-                        # 把 Playwright 抓到的 cookies 注入 cloudscraper，减少后续浏览器启动
-                        try:
-                            for k, v in (browser_cookies or {}).items():
-                                scraper.cookies.set(k, v, domain="www.mjjvm.com")
-                            if browser_cookies:
-                                logger.info("[%s] 将 Playwright 抓到的 cookies 注入 cloudscraper: %s", region, ", ".join(browser_cookies.keys()))
-                        except Exception:
-                            logger.debug("注入 Playwright cookies 到 cloudscraper 时出错（忽略）", exc_info=True)
-                        prods = parse_products(html, url, region)
-                        all_products.update(prods)
-                        success_this_url = True
-                        any_success = True
-                        logger.info("[%s] Playwright 抓取成功并解析。", region)
-                    else:
-                        logger.warning("[%s] Playwright 抓取失败或返回空。", region)
-                else:
-                    logger.debug("Playwright 不可用，跳过浏览器抓取。")
-
-            if success_this_url:
-                success_count += 1
-            else:
-                fail_count += 1
-                logger.error("[%s] 请求失败: 尝试 3 次均失败 (%s)", region, last_err)
-
-        logger.info("本轮请求完成: 成功 %d / %d, 失败 %d", success_count, len(URLS), fail_count)
-
-        if success_count == 0:
-            consecutive_fail_rounds += 1
-            logger.warning("本轮全部请求失败，连续失败轮数: %d", consecutive_fail_rounds)
-        else:
-            consecutive_fail_rounds = 0
-
-        if consecutive_fail_rounds >= 10:
-            logger.warning("连续 %d 轮全部失败，发送报警。", consecutive_fail_rounds)
-            send_ftqq([{"type": "报警", "name": "监控", "stock": 0, "region": "系统", "url": ROOT_ORIGIN}])
-            consecutive_fail_rounds = 0
-
-        if not any_success:
-            logger.warning("本轮请求全部失败，跳过数据更新。")
-            time.sleep(INTERVAL)
-            continue
-
-        messages = []
-        for name, info in all_products.items():
-            if info.get("member_only", 0) == 0:
-                continue
-            prev_stock = prev_data.get(name, {}).get("stock", 0)
-            curr_stock = info.get("stock", 0)
-            msg_type = None
-            if prev_stock == 0 and curr_stock > 0:
-                msg_type = "上架"
-            elif prev_stock > 0 and curr_stock == 0:
-                msg_type = "售罄"
-            elif prev_stock != curr_stock:
-                msg_type = "库存变化"
-            if msg_type:
-                msg = {
-                    "type": msg_type,
-                    "name": info["name"],
-                    "stock": curr_stock,
-                    "config": info.get("config", ""),
-                    "member_only": info.get("member_only", 0),
-                    "url": info.get("url", ROOT_ORIGIN),
-                    "region": info.get("region", "未知地区")
-                }
-                messages.append(msg)
-                logger.info("%s - %s  |  库存: %s  |  %s", msg_type, info["name"], curr_stock, MEMBER_NAME_MAP.get(info.get("member_only", 0), "会员"))
-
-        if messages:
-            send_ftqq(messages)
-
         try:
-            save_data(group_by_region(all_products))
+            # 获取当前时间
+            now = datetime.now()
+            logger.info(f"⏱️ 开始检查库存 [{now.strftime('%Y-%m-%d %H:%M:%S')}]")
+            
+            # 获取库存页面HTML
+            html = get_stock_data()
+            
+            if html:
+                # 解析库存数据
+                current_products = parse_stock_data(html)
+                
+                if current_products:
+                    # 加载上次库存数据
+                    previous_products = load_stock_data()
+                    
+                    # 保存当前库存数据
+                    save_stock_data(current_products)
+                    
+                    # 比较库存变化
+                    if previous_products:
+                        changes = compare_stock(previous_products, current_products)
+                        
+                        if changes:
+                            # 准备通知内容
+                            title = "🛒 MJJVM库存变化通知"
+                            content = ""
+                            
+                            for change in changes:
+                                if change['type'] == '上架':
+                                    content += f"🆕 新商品上架: {change['name']}\n"
+                                elif change['type'] == '售罄':
+                                    content += f"⛔ 商品售罄: {change['name']}\n"
+                                elif change['type'] == '下架':
+                                    content += f"⬇️ 商品下架: {change['name']}\n"
+                                elif change['type'] == '库存变化':
+                                    content += f"🔄 库存变化: {change['name']} ({change['old']} → {change['new']})\n"
+                            
+                            # 发送通知
+                            send_notification(title, content)
+                            logger.info(f"📤 发送库存变化通知: {len(changes)}处变化")
+                        else:
+                            logger.info("✅ 库存无变化")
+                    else:
+                        logger.info("✅ 首次运行，已记录初始库存状态")
+                    
+                    # 重置错误计数
+                    error_count = 0
+                else:
+                    logger.warning("⚠️ 无法解析库存数据")
+                    error_count += 1
+            else:
+                logger.warning("⚠️ 无法获取库存页面")
+                error_count += 1
+            
+            # 检查错误计数
+            if error_count >= max_errors:
+                logger.error(f"❌ 连续 {max_errors} 次检查失败，发送警报")
+                send_notification("⛔ MJJVM监控连续失败警报", 
+                                 f"监控服务已连续 {max_errors} 次无法获取或解析库存数据，请检查系统状态！")
+                # 重置错误计数
+                error_count = 0
+            
+            # 每天早上8点执行签到
+            if now.hour == 8 and now.minute < 5:  # 在8:00-8:05之间执行
+                logger.info("⏰ 执行每日签到...")
+                sign_success, sign_message = check_sign_in()
+                logger.info(f"签到结果: {'成功' if sign_success else '失败'} - {sign_message}")
+            
+            # 随机延迟 55-65 秒
+            delay = random.randint(55, 65)
+            logger.info(f"⏳ 下次检查将在 {delay} 秒后...")
+            time.sleep(delay)
+            
+        except KeyboardInterrupt:
+            logger.info("🛑 用户中断，退出程序")
+            sys.exit(0)
         except Exception as e:
-            logger.warning("保存数据失败: %s", e)
+            logger.error(f"❌ 主循环发生错误: {str(e)}")
+            time.sleep(30)
 
-        prev_data = all_products
-        time.sleep(INTERVAL)
+def test_notification():
+    """
+    测试通知功能
+    """
+    logger.info("🔔 发送测试通知...")
+    success = send_notification("🔔 MJJVM测试通知", 
+                              "这是一条测试通知，表明您的监控服务已正确配置并可以发送消息。")
+    if success:
+        logger.info("✅ 测试通知已发送")
+    else:
+        logger.error("❌ 测试通知发送失败")
 
-# ---------------------- 启动 ----------------------
+def test_sign_in():
+    """
+    测试签到功能
+    """
+    logger.info("🔔 测试签到功能...")
+    success, message = mjjbox_sign_in()
+    logger.info(f"签到测试结果: {'成功' if success else '失败'} - {message}")
+    
+    # 获取签到统计
+    stats = load_sign_stats()
+    
+    # 准备通知内容
+    title = "📅 MJJBOX签到测试成功" if success else "⚠️ MJJBOX签到测试失败"
+    content = f"{message}\n\n"
+    content += f"总签到次数: {stats['total_signs']}\n"
+    content += f"连续签到: {stats['consecutive_signs']}天\n"
+    content += f"最长连续: {stats['max_consecutive']}天"
+    
+    send_notification(title, content)
+
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="MJJVM 监控 (cloudscraper + playwright 回退)")
-    parser.add_argument("--test", action="store_true", help="发送测试推送后退出")
-    args = parser.parse_args()
-    if args.test:
-        send_ftqq([{"type": "上架", "name": "测试商品", "stock": 10, "config": "2C/2G", "member_only": 2, "url": ROOT_ORIGIN, "region": "测试区"}])
-        logger.info("✅ 测试推送已发送")
+    logger.info("🚀 MJJVM库存监控服务启动")
+    logger.info(f"📌 配置路径: {env_path}")
+    
+    # 检查测试参数
+    if '--test' in sys.argv:
+        test_notification()
         sys.exit(0)
+    
+    # 检查签到测试
+    if '--sign-test' in sys.argv:
+        test_sign_in()
+        sys.exit(0)
+    
+    # 进入主循环
     main_loop()
