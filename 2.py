@@ -1,20 +1,22 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import os
 import sys
 import time
+import json
 import random
 import logging
-import json
-import re
-import requests
+import argparse
 from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+import requests
+from bs4 import BeautifulSoup
+import cloudscraper
 from playwright.sync_api import sync_playwright
+import re
 
-# 日志配置
+# 配置日志
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -23,39 +25,47 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
-logger = logging.getLogger('mjjvm_monitor')
+logger = logging.getLogger('MJJVM_Monitor')
 
 # 加载环境变量
-env_path = '/opt/mjjvm/.env'
-if not os.path.exists(env_path):
-    logger.error(f"❌ 配置文件 {env_path} 不存在!")
-    sys.exit(1)
-
-load_dotenv(env_path)
-
+load_dotenv('/opt/mjjvm/.env')
 SCKEY = os.getenv('SCKEY')
 MJJVM_COOKIE = os.getenv('MJJVM_COOKIE')
-MJJBOX_URL = os.getenv('MJJBOX_URL', 'https://mjjbox.com')
 MJJBOX_COOKIE = os.getenv('MJJBOX_COOKIE')
-MJJBOX_REFERER = os.getenv('MJJBOX_REFERER', 'https://mjjbox.com/user')
+COOKIE_CHECK_INTERVAL = int(os.getenv('COOKIE_CHECK_INTERVAL', 14400))  # 默认4小时检查一次
 
-if not SCKEY:
-    logger.error("❌ SCKEY 未配置!")
-    sys.exit(1)
+# 目标URL
+MJJVM_URL = "https://www.mjjvm.com"
+MJJVM_STOCK_URL = f"{MJJVM_URL}/stock"
+MJJBOX_URL = "https://www.mjjbox.com"
+MJJBOX_SIGNIN_URL = f"{MJJBOX_URL}/user/checkin"
+MJJBOX_PROFILE_URL = f"{MJJBOX_URL}/user"
 
-# 上次库存数据存储路径
+# 文件路径
 STOCK_FILE = '/opt/mjjvm/stock_history.json'
-# 上次签到日期存储路径
 SIGN_FILE = '/opt/mjjvm/last_sign_date'
-# 签到统计数据存储路径
 SIGN_STATS_FILE = '/opt/mjjvm/sign_stats.json'
+COOKIE_STATUS_FILE = '/opt/mjjvm/cookie_status.json'
+
+# 用户代理列表
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+]
+
+# 全局状态
+last_cookie_check_time = 0
+cookie_valid_status = {
+    'mjjvm': True,
+    'mjjbox': True
+}
 
 def send_notification(title, content):
-    """
-    通过Server酱发送通知
-    """
+    """发送Server酱通知"""
     if not SCKEY:
-        logger.error("❌ SCKEY未配置，无法发送通知")
+        logger.warning("未配置Server酱SCKEY，跳过通知发送")
         return False
     
     try:
@@ -75,35 +85,35 @@ def send_notification(title, content):
                 logger.error(f"❌ 通知发送失败: {result.get('message')}")
         else:
             logger.error(f"❌ 通知发送失败，HTTP状态码: {response.status_code}")
-    
     except Exception as e:
         logger.error(f"❌ 发送通知时出错: {str(e)}")
     
     return False
 
 def get_stock_data():
-    """
-    使用Playwright获取库存页面HTML
-    """
+    """使用Playwright获取库存页面HTML"""
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser = p.chromium.launch(headless=True)
             context = browser.new_context()
             page = context.new_page()
             
             # 设置自定义Cookie
             if MJJVM_COOKIE:
-                context.add_cookies([
-                    {
-                        'name': 'custom_cookie',
-                        'value': MJJVM_COOKIE,
-                        'domain': 'mjjvm.com',
-                        'path': '/'
-                    }
-                ])
+                cookies = []
+                for cookie_item in MJJVM_COOKIE.split(';'):
+                    if '=' in cookie_item:
+                        name, value = cookie_item.split('=', 1)
+                        cookies.append({
+                            'name': name.strip(),
+                            'value': value.strip(),
+                            'domain': 'www.mjjvm.com',
+                            'path': '/'
+                        })
+                context.add_cookies(cookies)
             
             # 访问库存页面
-            page.goto("https://mjjvm.com/stock")
+            page.goto(MJJVM_STOCK_URL, timeout=30000)
             
             # 等待内容加载
             page.wait_for_selector('.product-item', timeout=30000)
@@ -120,9 +130,7 @@ def get_stock_data():
         return None
 
 def parse_stock_data(html):
-    """
-    解析库存HTML数据
-    """
+    """解析库存HTML数据"""
     if not html:
         return None
     
@@ -163,9 +171,7 @@ def parse_stock_data(html):
         return None
 
 def save_stock_data(products):
-    """
-    保存当前库存数据到文件
-    """
+    """保存当前库存数据到文件"""
     try:
         with open(STOCK_FILE, 'w', encoding='utf-8') as f:
             json.dump(products, f, ensure_ascii=False, indent=2)
@@ -175,9 +181,7 @@ def save_stock_data(products):
         return False
 
 def load_stock_data():
-    """
-    从文件加载上次的库存数据
-    """
+    """从文件加载上次的库存数据"""
     if not os.path.exists(STOCK_FILE):
         return None
     
@@ -189,9 +193,7 @@ def load_stock_data():
         return None
 
 def compare_stock(old_data, new_data):
-    """
-    比较新旧库存数据，检测变化
-    """
+    """比较新旧库存数据，检测变化"""
     changes = []
     
     if not old_data or not new_data:
@@ -255,12 +257,10 @@ def compare_stock(old_data, new_data):
                 'new': '已下架'
             })
     
-    return changes
+   极速返回 changes
 
 def mjjbox_sign_in():
-    """
-    MJJBOX网站签到功能
-    """
+    """MJJBOX网站签到功能"""
     if not MJJBOX_COOKIE:
         logger.error("❌ MJJBOX_COOKIE未配置，无法执行签到")
         return False, "签到失败：未配置Cookie"
@@ -268,19 +268,15 @@ def mjjbox_sign_in():
     # 准备请求头
     headers = {
         'Cookie': MJJBOX_COOKIE,
-        'Referer': MJJBOX_REFERER,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
-        'Accept-Encoding': 'gzip, deflate',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
+        'Referer': MJJBOX_PROFILE_URL,
+        'User-Agent': random.choice(USER_AGENTS),
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'X-Requested-With': 'XMLHttpRequest'
     }
     
     try:
         # 尝试签到
-        sign_url = f"{MJJBOX_URL}/user/checkin"
-        response = requests.post(sign_url, headers=headers, timeout=30)
+        response = requests.post(MJJBOX_SIGNIN_URL, headers=headers, timeout=30)
         
         # 解析响应
         if response.status_code == 200:
@@ -336,13 +332,10 @@ def mjjbox_sign_in():
         return False, f"签到异常：{str(e)}"
 
 def get_points_info(headers):
-    """
-    获取积分信息（总积分、总签到次数、连续签到次数）
-    """
+    """获取积分信息（总积分、总签到次数、连续签到次数）"""
     try:
         # 获取用户信息页面
-        user_url = f"{MJJBOX_URL}/user"
-        response = requests.get(user_url, headers=headers, timeout=30)
+        response = requests.get(MJJBOX_PROFILE_URL, headers=headers, timeout=30)
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -383,9 +376,7 @@ def get_points_info(headers):
         return f"获取积分信息失败: {str(e)}"
 
 def extract_number(text, keyword):
-    """
-    从文本中提取数字
-    """
+    """从文本中提取数字"""
     if not text:
         return None
     
@@ -405,9 +396,7 @@ def extract_number(text, keyword):
     return None
 
 def load_sign_stats():
-    """
-    加载签到统计数据
-    """
+    """加载签到统计数据"""
     if os.path.exists(SIGN_STATS_FILE):
         try:
             with open(SIGN_STATS_FILE, 'r') as f:
@@ -425,21 +414,15 @@ def load_sign_stats():
     }
 
 def save_sign_stats(stats):
-    """
-    保存签到统计数据
-    """
+    """保存签到统计数据"""
     try:
         with open(SIGN_STATS_FILE, 'w') as f:
             json.dump(stats, f, indent=2)
         return True
-    except Exception as e:
-        logger.error(f"❌ 保存签到统计数据失败: {str(e)}")
-        return False
+   极速返回 False
 
 def update_sign_stats(success=True):
-    """
-    更新签到统计数据
-    """
+    """更新签到统计数据"""
     stats = load_sign_stats()
     today = datetime.now().strftime('%Y-%m-%d')
     
@@ -449,8 +432,8 @@ def update_sign_stats(success=True):
         
         # 更新连续签到次数
         last_success = stats.get('last_success_date')
-        if last_success and (datetime.strptime(last_success, '%Y-%m-%d') + timedelta(days=1)) == datetime.now().date():
-            stats['consecutive_signs'] = stats.get('consecutive_signs', 0) + 1
+        if last_success and (datetime.strptime(last_success, '%Y-%m-%d') + timedelta(days=1)).date() == datetime.now().date():
+            stats['consecutive_sign极速递增 1
         else:
             stats['consecutive_signs'] = 1
         
@@ -459,7 +442,7 @@ def update_sign_stats(success=True):
             stats['max_consecutive'] = stats['consecutive_signs']
         
         # 更新最后成功日期
-        stats['last_success_date'] = today
+        stats['极速设置 today
     else:
         # 重置连续签到
         stats['consecutive_signs'] = 0
@@ -469,9 +452,7 @@ def update_sign_stats(success=True):
     return stats
 
 def check_sign_in():
-    """
-    检查并执行签到，发送通知
-    """
+    """检查并执行签到，发送通知"""
     # 获取当前日期
     today = datetime.now().strftime('%Y-%m-%d')
     
@@ -508,19 +489,148 @@ def check_sign_in():
     
     return success, message
 
+def check_cookie_validity():
+    """检查Cookie有效性"""
+    global cookie_valid_status
+    
+    # 检查MJJVM Cookie
+    mjjvm_valid = check_mjjvm_cookie()
+    # 检查MJJBOX Cookie
+    mjjbox_valid = check_mjjbox_cookie()
+    
+    # 更新状态
+    cookie_valid_status['mjjvm'] = mjjvm_valid
+    cookie_valid_status['mjjbox'] = mjjbox_valid
+    
+    # 保存状态
+    save_cookie_status()
+    
+    # 如果有Cookie失效，发送通知
+    if not mjjvm_valid or not mjjbox_valid:
+        send_cookie_invalid_notification(mjjvm_valid, mjjbox_valid)
+    
+    return mjjvm_valid and mjjbox_valid
+
+def check_mjjvm_cookie():
+    """检查MJJVM Cookie有效性"""
+    if not MJJVM_COOKIE:
+        logger.warning("未配置MJJVM_COOKIE，跳过检查")
+        return True
+    
+    headers = {
+        'Cookie': MJJVM_COOKIE,
+        'User-Agent': random.choice(USER_AGENTS)
+    }
+    
+    try:
+        response = requests.get(MJJVM_STOCK_URL, headers=headers, timeout=15)
+        
+        # 检查是否被重定向到登录页面或显示错误
+        if response.status_code == 200 and "登录" not in response.text and "错误" not in response.text:
+            logger.info("✅ MJJVM Cookie有效")
+            return True
+        else:
+            logger.warning("❌ MJJVM Cookie已失效")
+            return False
+    except Exception as e:
+        logger.error(f"❌ 检查MJJVM Cookie时出错: {str(e)}")
+        return False
+
+def check_mjjbox_cookie():
+    """检查MJJBOX Cookie有效性"""
+    if not MJJBOX_COOKIE:
+        logger.warning("未配置MJJBOX_COOKIE，跳过检查")
+        return True
+    
+    headers = {
+        'Cookie': MJJBOX_COOKIE,
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': MJJBOX_PROFILE_URL
+    }
+    
+    try:
+        response = requests.get(MJJBOX_PROFILE_URL, headers=headers, timeout=15)
+        
+        # 检查是否包含用户信息而不是登录表单
+        if response.status_code == 200 and "用户资料" in response.text and "登录" not in response.text:
+            logger.info("✅ MJJBOX Cookie有效")
+            return True
+        else:
+            logger.warning("❌ MJJBOX Cookie已失效")
+            return False
+    except Exception as e:
+        logger.error(f"❌ 检查MJJBOX Cookie时出错: {str(e)}")
+        return False
+
+def save_cookie_status():
+    """保存Cookie状态到文件"""
+    try:
+        with open(COOKIE_STATUS_FILE, 'w') as f:
+            json.dump({
+                'last_check': datetime.now().isoformat(),
+                'status': cookie_valid_status
+            }, f, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"❌ 保存Cookie状态失败: {str(e)}")
+        return False
+
+def load_cookie_status():
+    """从文件加载Cookie状态"""
+    if os.path.exists(COOKIE_STATUS_FILE):
+        try:
+            with open(COOKIE_STATUS_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return None
+
+def send_cookie_invalid_notification(mjjvm_valid, mjjbox_valid):
+    """发送Cookie失效通知"""
+    title = "⚠️ Cookie失效警告"
+    
+    content = "## MJJVM Cookie状态检查\n\n"
+    content += f"**检查时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    content += "### Cookie状态:\n"
+    content += f"- MJJVM Cookie: {'✅ 有效' if mjjvm_valid else '❌ 失效'}\n"
+    content += f"- MJJBOX Cookie: {'✅ 有效' if mjjbox_valid else '❌ 失效'}\n\n"
+    content += "### 建议操作:\n"
+    content += "1. 请尽快更新失效的Cookie配置\n"
+    content += "2. 重新运行安装脚本修改配置\n"
+    content += "3. 检查账号状态是否正常\n\n"
+    content += "如需帮助，请查看日志文件: /opt/mjjvm/stock_out.log"
+    
+    send_notification(title, content)
+
 def main_loop():
-    """
-    主监控循环
-    """
+    """主监控循环"""
+    global last_cookie_check_time
+    
     # 初始化错误计数
     error_count = 0
     max_errors = 5
+    
+    # 加载上次Cookie检查时间
+    cookie_status = load_cookie_status()
+    if cookie_status:
+        try:
+            last_check = datetime.fromisoformat(cookie_status['last_check'])
+            last_cookie_check_time = last_check.timestamp()
+        except:
+            last_cookie_check_time = 0
     
     while True:
         try:
             # 获取当前时间
             now = datetime.now()
+            current_time = time.time()
             logger.info(f"⏱️ 开始检查库存 [{now.strftime('%Y-%m-%d %H:%M:%S')}]")
+            
+            # 检查Cookie有效性（定期执行）
+            if current_time - last_cookie_check_time >= COOKIE_CHECK_INTERVAL:
+                logger.info("🔄 执行Cookie有效性检查...")
+                check_cookie_validity()
+                last_cookie_check_time = current_time
             
             # 获取库存页面HTML
             html = get_stock_data()
@@ -599,9 +709,7 @@ def main_loop():
             time.sleep(30)
 
 def test_notification():
-    """
-    测试通知功能
-    """
+    """测试通知功能"""
     logger.info("🔔 发送测试通知...")
     success = send_notification("🔔 MJJVM测试通知", 
                               "这是一条测试通知，表明您的监控服务已正确配置并可以发送消息。")
@@ -611,9 +719,7 @@ def test_notification():
         logger.error("❌ 测试通知发送失败")
 
 def test_sign_in():
-    """
-    测试签到功能
-    """
+    """测试签到功能"""
     logger.info("🔔 测试签到功能...")
     success, message = mjjbox_sign_in()
     logger.info(f"签到测试结果: {'成功' if success else '失败'} - {message}")
@@ -625,24 +731,50 @@ def test_sign_in():
     title = "📅 MJJBOX签到测试成功" if success else "⚠️ MJJBOX签到测试失败"
     content = f"{message}\n\n"
     content += f"总签到次数: {stats['total_signs']}\n"
-    content += f"连续签到: {stats['consecutive_signs']}天\n"
-    content += f"最长连续: {stats['max_consecutive']}天"
+    content += f"连续签到: {stats['consecutive_sign极速返回 content
+
+def test_cookie_check():
+    """测试Cookie检查功能"""
+    logger.info("🔔 测试Cookie检查功能...")
+    result = check_cookie_validity()
+    logger.info(f"Cookie检查结果: {'全部有效' if result else '有Cookie失效'}")
+    
+    # 准备通知内容
+    title = "✅ Cookie检查测试" if result else "⚠️ Cookie检查测试"
+    content = "## Cookie状态检查测试\n\n"
+    content += f"**检查时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    content += "### 检查结果:\n"
+    content += f"- MJJVM Cookie: {'✅ 有效' if cookie_valid_status['mjjvm'] else '❌ 失效'}\n"
+    content += f"- MJJBOX Cookie: {'✅ 有效' if cookie_valid_status['mjjbox'] else '❌ 失效'}\n\n"
+    content += "### 详细状态:\n"
+    content += f"MJJVM Cookie: {MJJVM_COOKIE[:50]}...\n" if MJJVM_COOKIE else "MJJVM Cookie: 未配置\n"
+    content += f"MJJBOX Cookie: {MJJBOX_COOKIE[:50]}...\n" if MJJBOX_COOKIE else "MJJBOX Cookie: 未配置\n"
     
     send_notification(title, content)
 
 if __name__ == "__main__":
     logger.info("🚀 MJJVM库存监控服务启动")
-    logger.info(f"📌 配置路径: {env_path}")
     
-    # 检查测试参数
-    if '--test' in sys.argv:
-        test_notification()
-        sys.exit(0)
-    
-    # 检查签到测试
-    if '--sign-test' in sys.argv:
-        test_sign_in()
-        sys.exit(0)
+    # 检查命令行参数
+    if len(sys.argv) > 1:
+        if '--test' in sys.argv:
+            test_notification()
+            sys.exit(0)
+        elif '--sign-test' in sys.argv:
+            test_sign_in()
+            sys.exit(0)
+        elif '--cookie-test' in sys.argv:
+            test_cookie_check()
+            sys.exit(0)
+        elif '--help' in sys.argv or '-h' in sys.argv:
+            print("用法: python 2.py [选项]")
+            print("选项:")
+            print("  --test        测试通知功能")
+            print("  --sign-test   测试签到功能")
+            print("  --cookie-test 测试Cookie检查功能")
+            print("  --help, -h    显示帮助信息")
+            sys.exit(0)
     
     # 进入主循环
     main_loop()
+
