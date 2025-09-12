@@ -33,14 +33,26 @@ check_and_install() {
     fi
 }
 
-# 显示使用说明
-show_usage() {
-    echo "MJJVM 监控与签到管理脚本"
-    echo "用法: $0 [install|config|uninstall]"
-    echo "选项:"
-    echo "  install       安装MJJVM监控与签到服务"
-    echo "  config        修改配置"
-    echo "  uninstall     卸载服务"
+# 交互式菜单
+show_menu() {
+    clear
+    echo "====================================="
+    echo "    MJJVM 监控与签到管理脚本"
+    echo "====================================="
+    echo "1. 安装/更新服务"
+    echo "2. 修改配置"
+    echo "3. 卸载服务"
+    echo "4. 退出"
+    echo "====================================="
+    read -p "请输入选项 [1-4]: " choice
+    
+    case $choice in
+        1) install_service ;;
+        2) modify_config ;;
+        3) uninstall_service ;;
+        4) echo "退出脚本"; exit 0 ;;
+        *) echo "无效选项，请重新输入"; sleep 1; show_menu ;;
+    esac
 }
 
 # 安装功能
@@ -73,6 +85,7 @@ install_service() {
     echo "✅ 脚本保存为 $SCRIPT_PATH"
 
     # 生成 .env 配置
+    echo ""
     echo "📝 请按提示输入 ENV 配置"
     read -p "请输入方糖的 SendKey (空则跳过推送配置): " SCKEY
     read -p "请输入 MJJVM 的 Cookie (示例: PHPSESSID=xxxx; cf_clearance=xxxx) (可留空): " MJJVM_COOKIE
@@ -80,7 +93,8 @@ install_service() {
     
     # 设置 Cookie 保活检查间隔
     COOKIE_CHECK_INTERVAL=14400
-    echo -e "\n🔄 Cookie 保活检查间隔（秒）"
+    echo ""
+    echo "🔄 Cookie 保活检查间隔（秒）"
     echo "默认值 14400 秒（4 小时）"
     read -p "请输入间隔时间（直接回车使用默认值）: " input_interval
     if [ -n "$input_interval" ]; then
@@ -164,13 +178,18 @@ EOF
     echo "sudo -u $RUNNER_USER $VENV_DIR/bin/python $SCRIPT_PATH --test"
     echo "sudo -u $RUNNER_USER $VENV_DIR/bin/python $SCRIPT_PATH --sign-test"
     echo "sudo -u $RUNNER_USER $VENV_DIR/bin/python $SCRIPT_PATH --cookie-test"
+    
+    read -p "按回车键返回主菜单..."
+    show_menu
 }
 
 # 修改配置功能
 modify_config() {
     if [ ! -f "$ENV_FILE" ]; then
-        echo "❌ 未找到 $ENV_FILE，请先安装"
-        exit 1
+        echo "❌ 未找到 $ENV_FILE，请先安装服务"
+        sleep 2
+        show_menu
+        return
     fi
     
     # 读取当前配置
@@ -178,28 +197,28 @@ modify_config() {
 
     echo -e "\n当前 SCKEY = ${SCKEY:-<未配置>}"
     read -p "是否修改 SCKEY? (y/n): " choice
-    if [ "$choice" = "y" ]; then
+    if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
         read -p "请输入新的 SCKEY (留空则清空): " new_sckey
         SCKEY="$new_sckey"
     fi
 
     echo -e "\n当前 MJJVM_COOKIE = ${MJJVM_COOKIE:-<未配置>}"
     read -p "是否修改 MJJVM_COOKIE? (y/n): " choice
-    if [ "$choice" = "y" ]; then
+    if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
         read -p "请输入新的 MJJVM_COOKIE (留空则清空): " new_cookie
         MJJVM_COOKIE="$new_cookie"
     fi
     
     echo -e "\n当前 MJJBOX_COOKIE = ${MJJBOX_COOKIE:-<未配置>}"
     read -p "是否修改 MJJBOX_COOKIE? (y/n): " choice
-    if [ "$choice" = "y" ]; then
+    if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
         read -p "请输入新的 MJJBOX_COOKIE (留空则清空): " new_mjjbox_cookie
         MJJBOX_COOKIE="$new_mjjbox_cookie"
     fi
     
     echo -e "\n当前 Cookie 保活检查间隔 = ${COOKIE_CHECK_INTERVAL:-14400} 秒"
     read -p "是否修改间隔时间? (y/n): " choice
-    if [ "$choice" = "y" ]; then
+    if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
         read -p "请输入新的间隔时间（秒）: " new_interval
         COOKIE_CHECK_INTERVAL="$new_interval"
     fi
@@ -216,15 +235,20 @@ modify_config() {
     chmod 600 "$ENV_FILE"
     systemctl restart mjjvm
     echo "✅ 配置已修改并重启服务"
+    
+    read -p "按回车键返回主菜单..."
+    show_menu
 }
 
 # 卸载功能
 uninstall_service() {
     echo "⚠️ 警告：此操作会停止服务并删除监控相关文件"
     read -p "是否继续卸载? (y/n): " choice
-    if [ "$choice" != "y" ]; then
+    if [ "$choice" != "y" ] && [ "$choice" != "Y" ]; then
         echo "已取消"
-        exit 1
+        sleep 1
+        show_menu
+        return
     fi
     
     if [ -f "$SERVICE_FILE" ]; then
@@ -236,29 +260,28 @@ uninstall_service() {
     
     rm -rf "$BOT_DIR"
     echo "✅ 已卸载并删除 $BOT_DIR 与 service 文件"
+    
+    read -p "按回车键返回主菜单..."
+    show_menu
 }
 
 # 主程序
-if [ $# -eq 0 ]; then
-    show_usage
-    exit 1
-fi
-
-case "$1" in
-    install)
-        install_service
-        ;;
-    config)
-        modify_config
-        ;;
-    uninstall)
-        uninstall_service
-        ;;
-    *)
-        echo "❌ 无效选项: $1"
-        show_usage
+if [ $# -gt 0 ]; then
+    # 命令行参数模式
+    case "$1" in
+        install) install_service ;;
+        config) modify_config ;;
+        uninstall) uninstall_service ;;
+        *) echo "无效参数: $1" ;;
+    esac
+else
+    # 交互式菜单模式
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "❌ 请使用 root 权限运行此脚本 (sudo)"
         exit 1
-        ;;
-esac
+    fi
+    
+    show_menu
+fi
 
 exit 0
