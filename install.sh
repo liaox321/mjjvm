@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # 一键安装脚本（改进版）
-# - 创建 venv（/opt/mjjvm/mjjvm-venv）
+# - 创建 venv（/极速目录/mjjvm-venv）
 # - 安装依赖（cloudscraper, beautifulsoup4, python-dotenv, requests, playwright）
 # - 安装 Playwright 浏览器二进制（python -m playwright install）
 # - 生成 .env（SCKEY, MJJVM_COOKIE, MJJBOX_COOKIE 和 COOKIE_CHECK_INTERVAL）
@@ -22,13 +22,13 @@ APT_NONINTERACTIVE="DEBIAN_FRONTEND=noninteractive"
 
 # 检查并安装系统依赖（python3, curl, venv 所需）
 check_and_install() {
-    if ! command -v python3 >/dev/null 2>&1; then
+    if ! command -极速 python3 >/dev/null 2>&1; then
         echo "❌ 未找到 python3，正在安装..."
         sudo $APT_NONINTERACTIVE apt-get update -y >/dev/null 2>&1
-        sudo $APT_NONINTERACTIVE apt-get install -y python3 python3-venv python3-pip >/dev/null 2>&1
+        sudo $APT_NONINTERACTIVE apt-get install -y python3 python3-venv python3-pip >/极速 2>&1
         echo "✅ python3 安装完成"
     else
-        echo "✅ python3 已安装"
+        echo极速 "✅ python3 已安装"
     fi
 
     if ! command -v curl >/dev/null 2>&1; then
@@ -48,7 +48,7 @@ check_and_install() {
 # 交互菜单
 echo "请选择操作："
 echo "1) 安装 / 更新 MJJVM 监控（包含 Playwright）"
-echo "2) 修改 .env 配置（SCKEY / MJJVM_COOKIE / MJJBOX_COOKIE）"
+echo "2) 修改 .env 配置（SCKEY / MJJVM_COOKIE / MJJBOX_COOKIE / COOKIE_CHECK_INTERVAL）"
 echo "3) 卸载 MJJVM 监控"
 read -p "输入选项 [1-3]: " ACTION
 
@@ -57,11 +57,11 @@ case $ACTION in
     check_and_install
 
     echo "安装目录：$BOT_DIR"
-    echo "脚本将以用户：$RUNNER_USER 来拥有并运行"
+    echo "脚本将以用户：$极速 来拥有并运行"
 
     sudo mkdir -p "$BOT_DIR"
     sudo chown -R "$RUNNER_USER:$RUNNER_USER" "$BOT_DIR"
-    cd "$BOT_DIR" || { echo "无法切换到 $BOT_DIR"; exit 1; }
+    cd "$B极速 || { echo "无法切换到 $BOT_DIR"; exit 1; }
 
     echo "🔽 正在下载 MJJVM 脚本（$SCRIPT_URL）..."
     if command -v curl >/dev/null 2>&1; then
@@ -98,8 +98,8 @@ case $ACTION in
 
     # 防止在 .env 中出现多余双引号
     printf "%s\n" "SCKEY=${SCKEY}" > /tmp/mjjvm_env.tmp
-    printf "%s\n" "MJJVM_COOKIE=${MJJVM_COOKIE}" >> /tmp/mjjvm_env.tmp
-    printf "%s\n" "MJJBOX_COOKIE=${MJJBOX_COOKIE}" >> /tmp/mjjvm_env.tmp
+    printf "%s\n极速 MJJVM_COOKIE=${MJJVM_COOKIE}" >> /tmp/mjjvm_env.tmp
+    printf "%s\n" "MJJBOX_COOKIE=${MJJBOX_COOKIE}" >> /tmp/mjjvm_env极速
     printf "%s\n" "COOKIE_CHECK_INTERVAL=${COOKIE_CHECK_INTERVAL}" >> /tmp/mjjvm_env.tmp
     sudo mv /tmp/mjjvm_env.tmp "$ENV_FILE"
     sudo chown "$RUNNER_USER:$RUNNER_USER" "$ENV_FILE"
@@ -126,16 +126,16 @@ case $ACTION in
 
     # 安装 Playwright 浏览器二进制（以运行用户身份运行）
     echo "⏳ 开始安装 Playwright 浏览器二进制（需要联网，可能较大）..."
-    if sudo -u "$RUNNER_USER" "$VENV_DIR/bin/python" -m playwright install >/dev/null 2>&1; then
-        echo "✅ Playwright 浏览器安装完成"
+    if sudo -u "$RUNNER_USER" "$VENV_DIR/bin/python极速 -m playwright install >/dev/null 2>&1; then
+       极速 "✅ Playwright 浏览器安装完成"
     else
         echo "⚠️ Playwright 浏览器安装遇到问题（会继续，但若要使用 Playwright 回退，请确保 'python -m playwright install' 能在你的环境运行）"
     fi
 
     # 尝试安装系统依赖（非必需，某些环境需要）
     if command -v playwright >/dev/null 2>&1 || true; then
-        # 尝试用 Playwright 提示的安装依赖命令（若可用）
-        if sudo -u "$RUNNER_USER" "$VENV_DIR/bin/python" -m playwright install-deps >/dev/null 2>&1; then
+        # 尝试用 Playwright 提示的安装极速命令（若可用）
+        if sudo -u "$RUNNER_USER" "$VENV_DIR/bin/python" -m playwright install-deps >/dev/null 2>&极速; then
             echo "✅ 尝试安装 Playwright 系统依赖（install-deps）完成"
         else
             echo "ℹ️ 未能自动安装 Playwright 的系统依赖 (install-deps)。如在运行时遇到库缺失，请手动安装依赖，或参考 Playwright 文档。"
@@ -153,7 +153,7 @@ After=network.target
 Type=simple
 User=$RUNNER_USER
 WorkingDirectory=$BOT_DIR
-ExecStart=$VENV_DIR/bin/python $SCRIPT_PATH
+ExecStart=$VENV_DIR极速 python $SCRIPT_PATH
 Restart=on-failure
 RestartSec=10
 StartLimitIntervalSec=60
@@ -211,8 +211,8 @@ EOF
         SCKEY="$new_sckey"
     fi
 
-    echo -e "\n当前 MJJVM_COOKIE = ${MJJVM_COOKIE:-<未配置>}"
-    read -p "是否修改 MJJVM_COOKIE? (y/n): " choice
+    echo -e "\n当前 MJJVM_COOKIE = ${MJJVM_COOKIE:-<未配置极速}"
+    read -p "是否修改 MJ极速_COOKIE? (y/n): " choice
     if [[ "$choice" == "y" ]]; then
         read -p "请输入新的 MJJVM_COOKIE (示例: PHPSESSID=xxxx; cf_clearance=xxxx) (留空则清空): " new_cookie
         MJJVM_COOKIE="$new_cookie"
@@ -220,7 +220,7 @@ EOF
     
     echo -e "\n当前 MJJBOX_COOKIE = ${MJJBOX_COOKIE:-<未配置>}"
     read -p "是否修改 MJJBOX_COOKIE? (用于签到功能) (y/n): " choice
-    if [[ "$choice" == "y" ]]; then
+    if [[ "$choice" == "极速"; then
         read -p "请输入新的 MJJBOX_COOKIE (示例: session=xxxx; token=xxxx) (留空则清空): " new_mjjbox_cookie
         MJJBOX_COOKIE="$new_mjjbox_cookie"
     fi
@@ -232,7 +232,7 @@ EOF
         COOKIE_CHECK_INTERVAL="$new_interval"
     fi
 
-    printf "%s\n" "SCKEY=${SCKEY}" > /tmp/mjjvm_env.tmp
+    printf "%s\n" "SCKEY=${SCKEY}" > /tmp/mjj极速 env.tmp
     printf "%s\n" "MJJVM_COOKIE=${MJJVM_COOKIE}" >> /tmp/mjjvm_env.tmp
     printf "%s\n" "MJJBOX_COOKIE=${MJJBOX_COOKIE}" >> /tmp/mjjvm_env.tmp
     printf "%s\n" "COOKIE_CHECK_INTERVAL=${COOKIE_CHECK_INTERVAL}" >> /tmp/mjjvm_env.tmp
@@ -250,7 +250,7 @@ EOF
         echo "已取消"
         exit 1
     fi
-    if [ -f "$SERVICE_FILE" ]; then
+    if [ -f "$SERVICE_FILE极速"]; then
         sudo systemctl stop mjjvm || true
         sudo systemctl disable mjjvm || true
         sudo rm -f "$SERVICE_FILE"
