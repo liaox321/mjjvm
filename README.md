@@ -1,133 +1,114 @@
-# MJJVM 库存监控与签到服务
+# MJJVM 库存监控（方糖通知版）v1.0.5
 
-这是一个用于监控 MJJVM 商品库存变化的 Python 工具，同时集成了 MJJBOX 签到功能。支持自动检测商品上架/售罄/库存变化，并通过 Server酱·方糖通知推送到微信。新增 Cookie 保活功能，当 Cookie 失效时自动发送通知。
+声明：本项目通过AI完成
+
+这是一个用于监控 [MJJVM](https://www.mjjvm.com) 商品库存变化的 Python 工具。  
+支持自动检测商品 **上架 / 售罄 / 库存变化**，并通过 **Server酱·方糖通知** 推送到微信。
+
+---
 
 ## ✨ 功能特性
+- 定时请求 MJJVM 库存页面（默认 **60 秒** 检查一次）
+- 自动比对历史库存，检测变化并推送通知
+- 推送内容包含：
+  - 🟢 **上架通知**
+  - 🔴 **售罄通知**
+  - 🟡 **库存变化**
+  - ⚠️ **连续失败报警**
+- 运行日志保存到 `stock_out.log`
+- 配置保存到 `.env`，支持一键修改
+- 开机自启（systemd 管理）
 
-- **库存监控**
-  - 定时请求 MJJVM 库存页面（默认 60 秒检查一次）
-  - 自动比对历史库存，检测变化并推送通知
-  - 推送内容包含：🟢 上架通知 🔴 售罄通知 🟡 库存变化
-  - ⚠️ 连续失败报警
-  
-- **签到功能**
-  - 每天自动执行 MJJBOX 签到
-  - 签到成功/失败均发送通知
-  - 通知包含：总签到次数、连续签到天数、总积分
-  
-- **Cookie 保活**
-  - 定期检查 Cookie 有效性（默认每 4 小时检查一次）
-  - Cookie 失效时自动发送通知提醒
-  - 支持自定义检查间隔
-  
-- **系统管理**
-  - 运行日志保存到 `stock_out.log`
-  - 配置保存到 `.env`，支持一键修改
-  - 开机自启（systemd 管理）
-  - 交互式安装脚本
+---
 
 ## 🚀 安装步骤
 
-### 一键安装
-sudo bash <(curl -Ls https://raw.githubusercontent.com/liaox321/mjjvm/main/install.sh)
+一键安装：
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/liaox321/mjjvm/main/install.sh)
+
 
 安装脚本会自动完成：
-1. 下载并部署脚本到 `/opt/mjjvm`
-2. 创建虚拟环境并安装依赖
-3. 配置 Server酱 SendKey
-4. 注册 systemd 服务并开机自启
 
-### 安装过程说明
+1.下载并部署脚本到 /opt/mjjvm
 
-安装脚本提供交互式菜单：
+2.创建虚拟环境并安装依赖
 
-1. **安装/更新服务**
-   - 下载最新脚本
-   - 配置环境变量（SCKEY, MJJVM_COOKIE, MJJBOX_COOKIE）
-   - 设置 Cookie 保活检查间隔
-   - 安装 Python 依赖
-   - 安装 Playwright 浏览器
-   - 创建并启动 systemd 服务
+3.配置 Server酱 SendKey
 
-2. **修改配置**
-   - 更新 SCKEY（方糖推送密钥）
-   - 更新 MJJVM_COOKIE（库存监控 Cookie）
-   - 更新 MJJBOX_COOKIE（签到功能 Cookie）
-   - 调整 Cookie 保活检查间隔
+4.注册 systemd 服务并开机自启
 
-3. **卸载服务**
-   - 停止并禁用服务
-   - 删除安装目录和服务文件
+⚙️ 配置
+安装时会提示输入 方糖 SendKey，写入 /opt/mjjvm/.env 文件：
+SCKEY=你的SendKey
 
-## ⚙️ 配置说明
+获取方式：[Server酱官网](https://sct.ftqq.com/)
 
-安装时会提示输入以下配置项：
+如需修改配置，重新运行安装脚本选择 2. 修改 .env 配置。
 
-| 配置项 | 说明 | 获取方式 |
-|--------|------|----------|
-| `SCKEY` | 方糖 SendKey | [Server酱官网](https://sct.ftqq.com/) |
-| `MJJVM_COOKIE` | MJJVM 网站 Cookie | 登录后通过浏览器开发者工具获取 |
-| `MJJBOX_COOKIE` | MJJBOX 签到 Cookie | 登录后通过浏览器开发者工具获取 |
-| `COOKIE_CHECK_INTERVAL` | Cookie 检查间隔（秒） | 默认 14400（4 小时） |
-
-如需修改配置，重新运行安装脚本选择 **2. 修改 .env 配置**。
-
-## 🛠 使用方法
-
-### 服务管理
-bash
-
-查看服务状态
+🛠 使用方法
+·查看服务运行状态：
 sudo systemctl status mjjvm
-
-查看实时日志
+·查看实时日志：
 sudo journalctl -u mjjvm -f
-
-重启服务
+·重启服务：
 sudo systemctl restart mjjvm
-
-停止服务
+·停止服务：
 sudo systemctl stop mjjvm
 
-复制
-### 测试功能
-bash
 
-测试通知功能
+
+v1.0.1更新2025年9月10日14时20分
+1.目标站启用了 Cloudflare，
+2.通过cloudscraper/beautifulsoup4库来绕过Cloudflare
+
+v1.0.2更新2025年9月10日14时34分
+1.install.sh
+Python 脚本和 systemd 配置兼容，同时支持 cloudscraper 依赖安装，改进如下：
+安装依赖列表更新为：cloudscraper、beautifulsoup4、python-dotenv
+systemd 服务文件自动写入完整路径和环境
+修复一些重复 -y 参数和命令顺序问题
+安装、修改、卸载三大功能完整
+2.  2.py
+✅ 改动说明：
+每次请求时随机选择 User-Agent
+随机 Accept-Language 和 Cache-Control
+请求失败后延迟随机 2~5 秒再重试
+结合 cloudscraper 自动绕过 Cloudflare 验证
+
+v1.0.3更新2025年9月10日14时48分
+集成 Cloudscraper 会话
+每次请求使用 随机 Cookie，结合真实浏览器 headers
+原有的 库存监控 + 上架/售罄/库存变化判定 + 方糖推送 功能保留
+.env 文件可放 SCKEY 和其他自定义 Cookie
+
+v1.0.4更新2025年9月10日14时55分
+集成 固定浏览器 Cookie + 真实浏览器 headers + Cloudscraper 会话
+安装时一次性输入方糖 SendKey 和 MJJVM_COOKIE。
+
+v1.0.5更新2025年9月10日17时31分
+用 Playwright来抓取产品页的 HTML 并解析，不再经由 cloudscraper,Playwright 获取页面内容后再用 BeautifulSoup 解析
+整合依赖自动安装
+
+
+🔍 测试推送
+
+·确认推送是否正常：
 /opt/mjjvm/mjjvm-venv/bin/python /opt/mjjvm/2.py --test
 
-测试签到功能
-/opt/mjjvm/mjjvm-venv/bin/python /opt/mjjvm/2.py --sign-test
+·你会立刻在微信中收到一条「测试商品」的推送。
+日志中会显示：✅ 测试推送已发送
+❌ 卸载
+卸载脚本：
+bash <(curl -Ls https://raw.githubusercontent.com/liaox321/mjjvm/main/install.sh)
+选择 3. 卸载 MJJVM 监控。
 
-测试 Cookie 检查功能
-/opt/mjjvm/mjjvm-venv/bin/python /opt/mjjvm/2.py --cookie-test
-
-
-## ❌ 卸载
-bash
-
-sudo bash <(curl -Ls https://raw.githubusercontent.com/liaox321/mjjvm/main/install.sh)
-
-选择 3. 卸载 MJJVM 监控
-
-复制
 卸载内容包括：
-- `/opt/mjjvm` 目录（脚本与虚拟环境）
-- `mjjvm.service` systemd 服务文件
+/opt/mjjvm 目录（脚本与虚拟环境）
+mjjvm.service systemd 服务
 
-## 📄 版本更新
 
-### v2.0 (2025-09-12)
-- 新增 MJJBOX 自动签到功能
-- 增加 Cookie 保活检查机制
-- 优化安装脚本为交互式菜单
-- 完善测试命令和文档
+📄 License
 
-### v1.0.5 (2025-09-10)
-- 使用 Playwright 抓取产品页 HTML
-- 整合依赖自动安装
-- 修复 Cloudflare 绕过问题
-
-## 📄 License
-
-本项目采用 MIT License 开源。你可以自由使用、修改、分发此脚本。
+本项目采用 MIT License 开源。
+你可以自由使用、修改、分发此脚本。
