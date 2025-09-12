@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # MJJVM 监控与签到安装脚本
-# 版本: v2.0 (修复语法错误，增加Cookie保活功能)
+# 版本: v2.1 (修复语法错误，增加Cookie保活功能)
 
 RUNNER_USER=${SUDO_USER:-$USER}
 
@@ -13,15 +13,12 @@ SERVICE_FILE="/etc/systemd/system/mjjvm.service"
 SCRIPT_URL="https://raw.githubusercontent.com/liaox321/mjjvm/main/2.py"
 SCRIPT_PATH="$BOT_DIR/2.py"
 
-# 非交互 apt-get 安装选项
-APT_NONINTERACTIVE="DEBIAN_FRONTEND=noninteractive"
-
 # 检查并安装系统依赖
 check_and_install() {
     if ! command -v python3 >/dev/null 2>&1; then
         echo "❌ 未找到 python3，正在安装..."
-        sudo $APT_NONINTERACTIVE apt-get update -y >/dev/null 2>&1
-        sudo $APT_NONINTERACTIVE apt-get install -y python3 python3-venv python3-pip >/dev/null 2>&1
+        apt-get update -y >/dev/null 2>&1
+        apt-get install -y python3 python3-venv python3-pip >/dev/null 2>&1
         echo "✅ python3 安装完成"
     else
         echo "✅ python3 已安装"
@@ -29,7 +26,7 @@ check_and_install() {
 
     if ! command -v curl >/dev/null 2>&1; then
         echo "❌ 未找到 curl，正在安装..."
-        sudo $APT_NONINTERACTIVE apt-get install -y curl >/dev/null 2>&1
+        apt-get install -y curl >/dev/null 2>&1
         echo "✅ curl 安装完成"
     else
         echo "✅ curl 已安装"
@@ -53,8 +50,8 @@ install_service() {
     echo "安装目录：$BOT_DIR"
     echo "脚本将以用户：$RUNNER_USER 来拥有并运行"
 
-    sudo mkdir -p "$BOT_DIR"
-    sudo chown -R "$RUNNER_USER:$RUNNER_USER" "$BOT_DIR"
+    mkdir -p "$BOT_DIR"
+    chown -R "$RUNNER_USER:$RUNNER_USER" "$BOT_DIR"
     cd "$BOT_DIR" || { echo "无法切换到 $BOT_DIR"; exit 1; }
 
     echo "🔽 正在下载 MJJVM 脚本..."
@@ -71,7 +68,7 @@ install_service() {
         echo "❌ 下载失败或文件为空：$SCRIPT_PATH"
         exit 1
     fi
-    sudo chown "$RUNNER_USER:$RUNNER_USER" "$SCRIPT_PATH"
+    chown "$RUNNER_USER:$RUNNER_USER" "$SCRIPT_PATH"
     chmod +x "$SCRIPT_PATH"
     echo "✅ 脚本保存为 $SCRIPT_PATH"
 
@@ -98,7 +95,7 @@ install_service() {
         echo "COOKIE_CHECK_INTERVAL=${COOKIE_CHECK_INTERVAL}"
     } > "$ENV_FILE"
     
-    sudo chown "$RUNNER_USER:$RUNNER_USER" "$ENV_FILE"
+    chown "$RUNNER_USER:$RUNNER_USER" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
     echo "✅ 写入 $ENV_FILE (权限 600)"
 
@@ -112,11 +109,17 @@ install_service() {
     echo "📦 安装 Python 依赖到 venv..."
     sudo -u "$RUNNER_USER" "$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1
 
-    REQUIRED_PKG=("cloudscraper" "beautifulsoup4" "python-dotenv" "requests" "playwright")
-    for pkg in "${REQUIRED_PKG[@]}"; do
-        echo "安装 $pkg ..."
-        sudo -u "$RUNNER_USER" "$VENV_DIR/bin/python" -m pip install --no-cache-dir "$pkg"
-    done
+    # 逐个安装依赖包
+    echo "安装 cloudscraper..."
+    sudo -u "$RUNNER_USER" "$VENV_DIR/bin/python" -m pip install --no-cache-dir cloudscraper
+    echo "安装 beautifulsoup4..."
+    sudo -u "$RUNNER_USER" "$VENV_DIR/bin/python" -m pip install --no-cache-dir beautifulsoup4
+    echo "安装 python-dotenv..."
+    sudo -u "$RUNNER_USER" "$VENV_DIR/bin/python" -m pip install --no-cache-dir python-dotenv
+    echo "安装 requests..."
+    sudo -u "$RUNNER_USER" "$VENV_DIR/bin/python" -m pip install --no-cache-dir requests
+    echo "安装 playwright..."
+    sudo -u "$RUNNER_USER" "$VENV_DIR/bin/python" -m pip install --no-cache-dir playwright
 
     echo "✅ Python 依赖安装完成"
 
@@ -130,7 +133,7 @@ install_service() {
 
     # 写入 systemd 服务
     echo "⚙️ 写入 systemd 服务：$SERVICE_FILE"
-    cat << EOF | sudo tee "$SERVICE_FILE" > /dev/null
+    cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=MJJVM Stock Monitor and Sign-in Service
 After=network.target
@@ -149,13 +152,13 @@ EnvironmentFile=$ENV_FILE
 WantedBy=multi-user.target
 EOF
 
-    sudo systemctl daemon-reload
-    sudo systemctl enable mjjvm
-    sudo systemctl restart mjjvm
+    systemctl daemon-reload
+    systemctl enable mjjvm
+    systemctl restart mjjvm
 
     echo "✅ 安装完成，服务已启动"
-    echo "查看服务状态： sudo systemctl status mjjvm"
-    echo "查看实时日志： sudo journalctl -u mjjvm -f"
+    echo "查看服务状态： systemctl status mjjvm"
+    echo "查看实时日志： journalctl -u mjjvm -f"
     
     echo -e "\n🔄 测试命令："
     echo "sudo -u $RUNNER_USER $VENV_DIR/bin/python $SCRIPT_PATH --test"
@@ -175,28 +178,28 @@ modify_config() {
 
     echo -e "\n当前 SCKEY = ${SCKEY:-<未配置>}"
     read -p "是否修改 SCKEY? (y/n): " choice
-    if [[ "$choice" == "y" ]]; then
+    if [ "$choice" = "y" ]; then
         read -p "请输入新的 SCKEY (留空则清空): " new_sckey
         SCKEY="$new_sckey"
     fi
 
     echo -e "\n当前 MJJVM_COOKIE = ${MJJVM_COOKIE:-<未配置>}"
     read -p "是否修改 MJJVM_COOKIE? (y/n): " choice
-    if [[ "$choice" == "y" ]]; then
+    if [ "$choice" = "y" ]; then
         read -p "请输入新的 MJJVM_COOKIE (留空则清空): " new_cookie
         MJJVM_COOKIE="$new_cookie"
     fi
     
     echo -e "\n当前 MJJBOX_COOKIE = ${MJJBOX_COOKIE:-<未配置>}"
     read -p "是否修改 MJJBOX_COOKIE? (y/n): " choice
-    if [[ "$choice" == "y" ]]; then
+    if [ "$choice" = "y" ]; then
         read -p "请输入新的 MJJBOX_COOKIE (留空则清空): " new_mjjbox_cookie
         MJJBOX_COOKIE="$new_mjjbox_cookie"
     fi
     
     echo -e "\n当前 Cookie 保活检查间隔 = ${COOKIE_CHECK_INTERVAL:-14400} 秒"
     read -p "是否修改间隔时间? (y/n): " choice
-    if [[ "$choice" == "y" ]]; then
+    if [ "$choice" = "y" ]; then
         read -p "请输入新的间隔时间（秒）: " new_interval
         COOKIE_CHECK_INTERVAL="$new_interval"
     fi
@@ -209,9 +212,9 @@ modify_config() {
         echo "COOKIE_CHECK_INTERVAL=${COOKIE_CHECK_INTERVAL}"
     } > "$ENV_FILE"
     
-    sudo chown "$RUNNER_USER:$RUNNER_USER" "$ENV_FILE"
+    chown "$RUNNER_USER:$RUNNER_USER" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
-    sudo systemctl restart mjjvm
+    systemctl restart mjjvm
     echo "✅ 配置已修改并重启服务"
 }
 
@@ -219,19 +222,19 @@ modify_config() {
 uninstall_service() {
     echo "⚠️ 警告：此操作会停止服务并删除监控相关文件"
     read -p "是否继续卸载? (y/n): " choice
-    if [[ "$choice" != "y" ]]; then
+    if [ "$choice" != "y" ]; then
         echo "已取消"
         exit 1
     fi
     
     if [ -f "$SERVICE_FILE" ]; then
-        sudo systemctl stop mjjvm || true
-        sudo systemctl disable mjjvm || true
-        sudo rm -f "$SERVICE_FILE"
-        sudo systemctl daemon-reload
+        systemctl stop mjjvm || true
+        systemctl disable mjjvm || true
+        rm -f "$SERVICE_FILE"
+        systemctl daemon-reload
     fi
     
-    sudo rm -rf "$BOT_DIR"
+    rm -rf "$BOT_DIR"
     echo "✅ 已卸载并删除 $BOT_DIR 与 service 文件"
 }
 
